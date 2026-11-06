@@ -243,12 +243,13 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.015em;color:var(--text);marg
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
 .monthbox{margin-left:auto;display:flex;align-items:center;gap:8px;min-width:0;padding:2px 6px}
 .monthbox label{margin:0;font-size:13px;color:var(--sub);font-weight:500}
-.monthbox input{
-  padding:6px 10px;border-radius:var(--radius-sm);border:none;background:var(--fill-strong);
-  color:var(--text);font-size:16px;min-width:0;max-width:160px
+.monthbox select{
+  width:auto;margin:0;padding:6px 10px;border-radius:var(--radius-sm);border:none;background:var(--fill-strong);
+  color:var(--text);font-size:16px;min-width:0;max-width:180px
 }
+.monthbox .tiny{margin:0;padding:6px 10px}
 
-/* Tarjetas (paneles de vidrio) y ventana de inicio de sesión de administrador. */
+/* Tarjetas (paneles de vidrio). */
 .card{
   position:relative;background:var(--glass-bg);border:1px solid var(--glass-border);
   box-shadow:var(--glass-shadow);backdrop-filter:var(--glass-blur);-webkit-backdrop-filter:var(--glass-blur);
@@ -283,7 +284,7 @@ select:focus,input:focus,textarea:focus{
 textarea{resize:vertical;min-height:54px;line-height:1.45}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0}
 .row2>div{min-width:0}
-@media(max-width:560px){.row2{grid-template-columns:1fr}.monthbox{margin-left:0;width:100%}.monthbox input{max-width:none;flex:1}.toolbar .tiny{margin-left:auto}}
+@media(max-width:560px){.row2{grid-template-columns:1fr}.monthbox{margin-left:0;width:100%}.monthbox select{max-width:none;flex:1}.toolbar .tiny{margin-left:auto}}
 
 /* Botones: primary (azul, principal), secondary (gris), tiny (pequeños de las tablas). */
 button{font-family:inherit}
@@ -453,6 +454,7 @@ tr.prow.psel td{background:var(--accent)}
 //  10. Suscripciones ............. lecturas en tiempo real de Firebase (onSnapshot)
 //  11. Informes .................. pestaña Informes (indicadores y descargas), informe mensual de gestión (Word) y datos del mes (Excel)
 //      Costos (Fase 2) ........... salarios, costo de la hora, gastos y costo real por proyecto (sección 8, solo admin)
+//      Rentabilidad (Fase 3) ..... valor vendido, margen, % de avance y pronóstico al cierre (sección 8, solo admin)
 //  12. Acceso e inicio .......... pantalla de inicio de sesión, roles (admin / ingeniero), cuentas e init()
 // Colecciones de Firebase que usa: activities, config, config_engineers, config_projects,
 // comp_ajustes, campo_pagos, comp_saldos (estas tres últimas solo para administradores).
@@ -569,7 +571,6 @@ let pendingConfirm = null;
 // Menú ☰ de administrador: páginas que no van en la barra principal y si el menú está abierto
 const MENU_PAGES = [["equipo","Equipo"],["compensatorios","Compensatorios"],["bonos","Bonos de campo"],["costos","Costos"]];
 let menuOpen = false;
-// Ventana de inicio de sesión de administrador abierta/cerrada y su mensaje de error.
 // Sesión: "cargando" | "fuera" (pantalla de inicio) | "admin" | "ingeniero" | "sinacceso" (cuenta sin permiso)
 let authState = "cargando";
 // Copia de la lista de administradores del módulo de Firebase (para no crear cuentas de ingeniero con esos correos)
@@ -600,6 +601,7 @@ let compUnsubs = [];
 let costosCfg = null;   // costos/config
 let costosIng = {};     // slug ingeniero -> {engineer, salario}
 let gastos = [];        // proyecto_gastos
+let finanzas = {};      // proyecto_finanzas/<id proyecto>: valor vendido, costo ofertado y % de avance (Fase 3)
 let compSel = "";       // ingeniero abierto en la pestaña Compensatorios
 let bonoSel = "";       // ingeniero abierto en la pestaña Bonos de campo
 let openFolds = new Set(); // secciones plegables abiertas
@@ -630,6 +632,22 @@ function monthLabel(ym){
   const meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
   const [y,m] = ym.split("-").map(Number);
   return meses[m-1] + " " + y;
+}
+// Suma n meses a '2026-10' (n puede ser negativo).
+function sumarMes(ym, n){
+  const [y,m] = ym.split("-").map(Number);
+  const d = new Date(y, m-1+n, 1);
+  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
+}
+// Opciones del selector de mes, siempre en español (el control nativo del navegador sale en el idioma del equipo):
+// desde enero de 2025 hasta 3 meses adelante, incluyendo siempre el mes seleccionado.
+function opcionesMes(){
+  const hasta = sumarMes(todayStr().slice(0,7), 3);
+  let ini = "2025-01"; if(selectedMonth < ini) ini = selectedMonth;
+  const fin = selectedMonth > hasta ? selectedMonth : hasta;
+  const meses = [];
+  for(let ym = fin; ym >= ini; ym = sumarMes(ym, -1)) meses.push(ym);
+  return meses.map(ym=>`<option value="${ym}" ${ym===selectedMonth?"selected":""}>${monthLabel(ym)}</option>`).join("");
 }
 // Convierte un texto en un id válido para Firebase (minúsculas, sin tildes ni espacios).
 function sanitizeId(s){
@@ -668,7 +686,7 @@ function renderMenuBtn(){
     </div>`;
 }
 // ---------- 4. PANTALLAS ----------
-// Dibuja toda la app: título, pestañas, selector de mes, la pestaña activa y la ventana de login.
+// Dibuja toda la app: título, pestañas, selector de mes y la pestaña activa (o la pantalla de inicio de sesión).
 // Se llama cada vez que cambian los datos o la pestaña. Al final conecta los eventos (wireEvents).
 function render(){
   // Sin sesión (o mientras se verifica) solo se muestra la pantalla de inicio; nada de la app.
@@ -686,7 +704,7 @@ function render(){
       ${isOwner ? `<div class="tab ${view==='informes'?'active':''}" data-tab="informes">Informes</div>` : ""}
     </div>
     <div class="toolbar">
-      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><input type="month" id="month_sel" value="${selectedMonth}"></div>` : ""}
+      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><button class="tiny" id="month_prev" title="Mes anterior">‹</button><select id="month_sel">${opcionesMes()}</select><button class="tiny" id="month_next" title="Mes siguiente">›</button></div>` : ""}
       <span class="sesion"><span class="hint" title="Sesión iniciada">${escH(authEmail)}${isOwner ? " · administrador" : ""}</span><button class="tiny" id="btn_logout">Cerrar sesión</button></span>
     </div>
     ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : view==='costos' ? renderCostos() : renderProyectos()}
@@ -974,11 +992,15 @@ function wireEvents(){
   const lnkReset = document.getElementById("lnk_reset"); if(lnkReset) lnkReset.onclick = ()=>{ loginMode = "reset"; loginMsg = ""; render(); };
   const lnkBack = document.getElementById("lnk_back"); if(lnkBack) lnkBack.onclick = ()=>{ loginMode = "login"; loginMsg = ""; render(); };
   const monthSel = document.getElementById("month_sel");
-  if(monthSel) monthSel.onchange = (e)=>{
-    selectedMonth = e.target.value;
+  const cambiarMes = ym=>{
+    if(!/^\d{4}-\d{2}$/.test(ym)) return;
+    selectedMonth = ym;
     localStorage.setItem("ivan_sel_month", selectedMonth);
     subscribeMine(); if(isOwner) subscribeAll(); render();
   };
+  if(monthSel) monthSel.onchange = (e)=> cambiarMes(e.target.value);
+  const monthPrev = document.getElementById("month_prev"); if(monthPrev) monthPrev.onclick = ()=> cambiarMes(sumarMes(selectedMonth, -1));
+  const monthNext = document.getElementById("month_next"); if(monthNext) monthNext.onclick = ()=> cambiarMes(sumarMes(selectedMonth, 1));
   const engSel = document.getElementById("eng_select");
   if(engSel) engSel.onchange = (e)=>{
     selectedEngineer = e.target.value;
@@ -1150,6 +1172,7 @@ async function handleAction(act, ds){
   if(act === "confirm-acc-remove"){ pendingConfirm = null; try{ await db.doc("usuarios/"+ds.email).delete(); showMsg(`${ds.email} ya no puede entrar a la app. Para borrar la cuenta por completo, elimínala en Firebase → Authentication.`, "ok"); }catch(err){ showMsg("No se pudo quitar el acceso: " + (err.message||err.code), "bad"); render(); } return; }
   if(act === "costos-save"){ await saveCostos(); return; }
   if(act === "gasto-save"){ await saveGasto(ds.proj); return; }
+  if(act === "rent-save"){ await saveRentab(ds.proj); return; }
   if(act === "ask-del-gasto"){ pendingConfirm = {type:"deleteGasto", key: ds.id}; render(); return; }
   if(act === "confirm-del-gasto"){ await deleteGasto(ds.id); return; }
   if(act === "inf-consumo"){ await loadConsumoProyectos(true); return; }
@@ -1416,6 +1439,9 @@ function renderProyectos(){
   if(vencen.length) alertas.push(`<div class="palert bad"><b>Contratos por vencer:</b> ${vencen.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${diasHasta(p.fechaFin)<0?"vencido":diasHasta(p.fechaFin)+" días"})`).join(" · ")}</div>`);
   const sobre = projectsList.filter(p=>{ const c = consumoDe(p); return c && (c.nivel==="bad" || c.nivel==="warn"); });
   if(sobre.length) alertas.push(`<div class="palert ${sobre.some(p=>consumoDe(p).nivel==="bad")?"bad":"warn"}"><b>Consumo de horas:</b> ${sobre.map(p=>{ const c = consumoDe(p); return `<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${Math.round(c.pct)} %)`; }).join(" · ")}</div>`);
+  const ar = alertasRentabilidad();
+  if(ar.margen.length) alertas.push(`<div class="palert ${ar.margen.some(({x})=>x.nivel==="bad")?"bad":"warn"}"><b>Margen bajo:</b> ${ar.margen.map(({p,x})=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${fmtPct(x.margenRef)})`).join(" · ")}</div>`);
+  if(ar.avance.length) alertas.push(`<div class="palert ${ar.avance.some(({x})=>x.nivelAvance==="bad")?"bad":"warn"}"><b>Avance atrasado frente a las horas:</b> ${ar.avance.map(({p,x})=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (avance ${fmtPct(x.avance)}, horas ${fmtPct(x.consPct)})`).join(" · ")}</div>`);
   if(pendPago.length) alertas.push(`<div class="palert warn"><b>Pendientes de pago:</b> ${pendPago.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a>`).join(" · ")}</div>`);
   if(nOrdAb) alertas.push(`<div class="palert info"><b>${nOrdAb} orden(es) abierta(s)</b> en contratos vigentes.</div>`);
 
@@ -1488,7 +1514,7 @@ function renderProjDetalle(){
     </div>
     ${!isNew && p.duplicado ? `<div class="palert bad">Este código está repetido en la base anterior con otro cliente. Revisa las notas.</div>` : ""}
     ${form}
-    ${isNew ? "" : renderOrdenes(p) + renderProjHoras(p) + renderProjCosto(p)}
+    ${isNew ? "" : renderOrdenes(p) + renderProjHoras(p) + renderProjCosto(p) + renderProjRentab(p)}
   </div>`;
 }
 
@@ -1637,13 +1663,13 @@ function consumoBarra(p){
       <div class="hint">${c.disponible >= 0 ? `Quedan ${fmtN(c.disponible)} h (${fmtN(c.disponible/MAX_HORAS)} días)` : `Se pasó por ${fmtN(-c.disponible)} h (${fmtN(-c.disponible/MAX_HORAS)} días)`} · Presupuesto ${c.pres.fuente==="órdenes" ? "= suma de las órdenes del contrato" : "de la oferta"}</div>
     </div>`;
 }
-// Carga las horas acumuladas de todos los proyectos con presupuesto (las que falten, o todas si force).
+// Carga las horas acumuladas de los proyectos con presupuesto o valor vendido (las que falten, o todas si force).
 // Devuelve una promesa para que los informes puedan esperar a tener los datos.
 let consumoPromise = null;
 function loadConsumoProyectos(force){
   if(!db) return Promise.resolve();
   if(consumoPromise) return consumoPromise;
-  const lista = projectsList.filter(p=>presupuestoHoras(p) && (force || !projHoras[p.id] || projHoras[p.id].error));
+  const lista = projectsList.filter(p=>(presupuestoHoras(p) || tieneVenta(p)) && (force || !projHoras[p.id] || projHoras[p.id].error));
   if(!lista.length) return Promise.resolve();
   consumoPromise = Promise.all(lista.map(p=>loadProjHoras(p, true))).then(()=>{
     consumoPromise = null;
@@ -1724,6 +1750,37 @@ function renderInformes(){
     ${consRows ? cbTable(["Proyecto","Estado","Presupuesto","Consumido","Disponible","Consumo"], consRows)
       : `<div class="empty">Ningún proyecto tiene presupuesto todavía. Escríbelo en la pestaña Proyectos (dato de la transferencia de oferta).</div>`}
     ${sinPres.length && lista.length ? `<div class="hint" style="margin-top:8px">Proyectos activos sin presupuesto: ${sinPres.map(p=>escH(p.codigo)).join(", ")}.</div>` : ""}
+  </div>
+  ${renderInfRentab()}`;
+}
+// Tarjeta "Rentabilidad de proyectos" de la pestaña Informes.
+function renderInfRentab(){
+  const lista = proyectosConVenta();
+  const ok = lista.filter(({x})=>x && !x.sinTrm && !x.cargando && !x.error);
+  const ar = alertasRentabilidad();
+  const venta = ok.reduce((a,{x})=>a+x.venta,0), costo = ok.reduce((a,{x})=>a+x.costo,0);
+  const rows = lista.map(({p,x})=>{
+    const listo = x && !x.sinTrm && !x.cargando && !x.error;
+    return `<tr class="prow" data-act="inf-proj" data-id="${escH(p.id)}">
+      <td data-label="Proyecto"><b>${escH(p.codigo)}</b> ${escH(p.nombre||"")}</td>
+      <td data-label="Vendido">${x && x.venta!=null ? fmtCOP(x.venta) : "—"}</td>
+      <td data-label="Costo a la fecha">${listo ? fmtCOP(x.costo) : "…"}</td>
+      <td data-label="Margen a la fecha">${listo ? fmtPct(x.margenPct) : "…"}</td>
+      <td data-label="Avance / horas">${listo ? `${fmtPct(x.avance)} / ${fmtPct(x.consPct)}${x.nivelAvance && x.nivelAvance!=="ok" ? ` <span class="badge ${NIVEL_BADGE[x.nivelAvance]}">atrasado</span>` : ""}` : "…"}</td>
+      <td data-label="Margen al cierre">${listo && x.pron ? fmtPct(x.pron.margenPct) : "—"}</td>
+      <td data-label="Semáforo">${hayCostos() ? margenBadge(x) : `<span class="hint">Sin salarios</span>`}</td></tr>`;
+  }).join("");
+  return `<div class="card">
+    <h4 class="cbh" style="margin-top:0">Rentabilidad de proyectos</h4>
+    ${lista.length ? `<div class="kpis">
+      <div class="kpi"><div class="kpi-l">Valor vendido (con datos)</div><div class="kpi-v">${fmtCOP(venta)}</div></div>
+      <div class="kpi"><div class="kpi-l">Costo a la fecha</div><div class="kpi-v">${fmtCOP(costo)}</div></div>
+      <div class="kpi"><div class="kpi-l">Margen bajo (&lt; ${MARGEN_AMARILLO} %)</div><div class="kpi-v" style="color:var(--warn)">${ar.margen.filter(({x})=>x.nivel==="warn").length}</div></div>
+      <div class="kpi"><div class="kpi-l">Margen en riesgo (&lt; ${MARGEN_ROJO} %)</div><div class="kpi-v" style="color:var(--bad)">${ar.margen.filter(({x})=>x.nivel==="bad").length}</div></div>
+    </div>
+    ${cbTable(["Proyecto","Vendido","Costo a la fecha","Margen a la fecha","Avance / horas","Margen al cierre","Semáforo"], rows)}
+    <div class="hint" style="margin-top:8px">Margen al cierre = pronóstico con el ritmo actual (costo a la fecha ÷ % de avance). El semáforo usa ese pronóstico cuando hay avance. "Atrasado": las horas consumidas van más de ${BRECHA_AMARILLO} puntos por delante del avance.${!hayCostos() ? " Registra los salarios en ☰ → Costos para que el margen sea real." : ""}</div>`
+    : `<div class="empty">Ningún proyecto tiene valor vendido todavía. Escríbelo en la ficha del proyecto (sección Rentabilidad), con el dato de la transferencia de oferta.</div>`}
   </div>`;
 }
 
@@ -1856,6 +1913,135 @@ async function deleteGasto(id){
   catch(err){ showMsg("No se pudo eliminar: " + (err.message||err.code), "bad"); render(); }
 }
 
+// ---------- Fase 3: rentabilidad y pronóstico de los proyectos (solo administradores) ----------
+// Colección (solo admin): proyecto_finanzas/<id del proyecto> {codigo, moneda, valorVenta, trm, costoOferta, avance, avanceFecha}.
+// Va aparte de config_projects porque esa colección la leen los ingenieros y no deben ver precios.
+// Margen = valor vendido − costo real (Fase 2). Pronóstico al cierre = costo a la fecha ÷ % de avance (ritmo actual).
+const MARGEN_AMARILLO = 30, MARGEN_ROJO = 15;      // % de margen por debajo del cual el proyecto pasa a amarillo / rojo
+const BRECHA_AMARILLO = 10, BRECHA_ROJO = 20;      // puntos de % de horas consumidas por encima del % de avance
+const AVANCE_MIN_PRONOSTICO = 5;                   // con menos avance el pronóstico no es confiable
+const MONEDAS_VENTA = ["COP","USD"];
+function finDe(p){ return finanzas[p.id] || null; }
+function tieneVenta(p){ const f = finDe(p); return !!(f && Number(f.valorVenta) > 0); }
+// Convierte un valor de la oferta a pesos con la TRM registrada (null si es USD sin TRM).
+function aPesos(f, v){
+  if(v==null || v==="" || isNaN(Number(v))) return null;
+  if(f.moneda==="USD") return Number(f.trm) > 0 ? Number(v) * Number(f.trm) : null;
+  return Number(v);
+}
+function nivelMargen(pct){ return pct < MARGEN_ROJO ? "bad" : pct < MARGEN_AMARILLO ? "warn" : "ok"; }
+const NIVEL_MARGEN_TXT = { ok:"Margen sano", warn:"Margen bajo", bad:"Margen en riesgo" };
+// Rentabilidad del proyecto: null si no tiene valor vendido; {cargando}/{error} mientras llegan las horas.
+function rentabilidadDe(p){
+  const f = finDe(p);
+  if(!f || !(Number(f.valorVenta) > 0)) return null;
+  const venta = aPesos(f, f.valorVenta);
+  if(venta==null) return { sinTrm:true };
+  const c = costoProyecto(p);
+  if(c.cargando) return { venta, cargando:true };
+  if(c.error) return { venta, error:c.error };
+  const costo = c.total, margen = venta - costo, margenPct = margen / venta * 100;
+  const avance = f.avance!=null && f.avance!=="" ? Number(f.avance) : null;
+  const cons = consumoDe(p);
+  const consPct = cons && !cons.cargando && !cons.error ? cons.pct : null;
+  const brecha = avance!=null && consPct!=null ? consPct - avance : null;
+  const nivelAvance = brecha==null ? null : brecha > BRECHA_ROJO ? "bad" : brecha > BRECHA_AMARILLO ? "warn" : "ok";
+  let pron = null;
+  if(avance!=null && avance >= AVANCE_MIN_PRONOSTICO){
+    const fr = avance / 100;
+    const costoCierre = costo / fr, margenCierre = venta - costoCierre;
+    const h = projHoras[p.id];
+    pron = { costo: costoCierre, margen: margenCierre, margenPct: margenCierre / venta * 100, horas: h && !h.error && !h.loading ? h.total / fr : null };
+  }
+  const costoOferta = aPesos(f, f.costoOferta);
+  const margenOfertaPct = costoOferta!=null && costoOferta > 0 ? (venta - costoOferta) / venta * 100 : null;
+  // El semáforo usa el pronóstico al cierre cuando hay avance; si no, el margen a la fecha.
+  const margenRef = pron ? pron.margenPct : margenPct;
+  return { venta, costo, margen, margenPct, avance, avanceFecha:f.avanceFecha||"", consPct, brecha, nivelAvance, pron,
+    costoOferta, margenOfertaPct, desvCosto: costoOferta ? (pron ? pron.costo : costo) - costoOferta : null,
+    margenRef, nivel: nivelMargen(margenRef), sinCostos: !hayCostos(), moneda: f.moneda||"COP" };
+}
+const fmtPct = v => v==null || isNaN(v) ? "—" : Math.round(v)+" %";
+// Etiqueta corta del margen para tablas.
+function margenBadge(x){
+  if(!x || x.sinTrm) return `<span class="hint">${x && x.sinTrm ? "Falta TRM" : "—"}</span>`;
+  if(x.cargando || x.error) return `<span class="hint">…</span>`;
+  return `<span class="badge ${NIVEL_BADGE[x.nivel]}">${fmtPct(x.margenRef)}</span>`;
+}
+// Proyectos con valor vendido, del margen más bajo al más alto.
+function proyectosConVenta(){
+  return projectsList.filter(tieneVenta).map(p=>({ p, x:rentabilidadDe(p) }))
+    .sort((a,b)=> ((a.x&&a.x.margenRef)!=null ? a.x.margenRef : 999) - ((b.x&&b.x.margenRef)!=null ? b.x.margenRef : 999));
+}
+// Proyectos en alerta de margen o con el avance atrasado frente a las horas (solo con datos completos).
+function alertasRentabilidad(){
+  const lista = proyectosConVenta().filter(({x})=>x && !x.sinTrm && !x.cargando && !x.error);
+  if(!hayCostos()) return { margen:[], avance:lista.filter(({x})=>x.nivelAvance && x.nivelAvance!=="ok") };
+  return { margen: lista.filter(({x})=>x.nivel!=="ok"), avance: lista.filter(({x})=>x.nivelAvance && x.nivelAvance!=="ok") };
+}
+
+// Sección "Rentabilidad" de la ficha del proyecto: datos de la oferta, % de avance, margen y pronóstico.
+function renderProjRentab(p){
+  const f = finDe(p) || {};
+  const x = rentabilidadDe(p);
+  const mon = f.moneda || "COP";
+  const form = `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>Datos de la transferencia de oferta</b> — solo los ven los administradores.</div>
+      <div class="row2">
+        <div><label>Moneda de la venta</label><select id="rf_moneda">${selOpts(MONEDAS_VENTA, mon)}</select></div>
+        <div><label>TRM usada <span class="hint">(solo si es USD)</span></label><input type="number" id="rf_trm" min="0" step="any" value="${f.trm!=null?f.trm:""}" placeholder="Ej: 4100"></div>
+      </div>
+      <div class="row2">
+        <div><label>Valor vendido</label><input type="number" id="rf_venta" min="0" step="any" value="${f.valorVenta!=null?f.valorVenta:""}" placeholder="Ej: 85000000"></div>
+        <div><label>Costo presupuestado <span class="hint">(opcional, si la oferta lo trae)</span></label><input type="number" id="rf_costo" min="0" step="any" value="${f.costoOferta!=null?f.costoOferta:""}" placeholder="Misma moneda"></div>
+      </div>
+      <div class="row2">
+        <div><label>% de avance del proyecto</label><input type="number" id="rf_avance" min="0" max="100" step="1" value="${f.avance!=null?f.avance:""}" placeholder="0-100"></div>
+        <div><label>Avance actualizado el</label><div class="fixedeng" style="font-weight:400">${f.avanceFecha||"—"}</div></div>
+      </div>
+      <button class="primary" data-act="rent-save" data-proj="${escH(p.id)}" style="margin-top:10px">Guardar rentabilidad</button>
+    </div>`;
+  let res = "";
+  if(!x) res = `<div class="hint" style="margin-bottom:8px">Escribe el valor vendido para calcular el margen y el pronóstico al cierre.</div>`;
+  else if(x.sinTrm) res = `<div class="palert warn">El valor está en USD: escribe la TRM usada para convertirlo a pesos.</div>`;
+  else if(x.cargando) res = `<div class="hint">Calculando…</div>`;
+  else if(x.error) res = `<div class="hint">No se pudo calcular: ${escH(x.error)}</div>`;
+  else {
+    const col = n => n==="bad" ? "var(--bad)" : n==="warn" ? "var(--warn)" : "var(--ok)";
+    res = `<div class="kpis">
+        <div class="kpi"><div class="kpi-l">Valor vendido${x.moneda==="USD"?" (en COP)":""}</div><div class="kpi-v">${fmtCOP(x.venta)}</div></div>
+        <div class="kpi"><div class="kpi-l">Costo a la fecha</div><div class="kpi-v">${fmtCOP(x.costo)}</div></div>
+        <div class="kpi"><div class="kpi-l">Margen a la fecha</div><div class="kpi-v">${fmtCOP(x.margen)} <span class="hint">${fmtPct(x.margenPct)}</span></div></div>
+        <div class="kpi"><div class="kpi-l">Margen al cierre (pronóstico)</div><div class="kpi-v" style="color:${x.pron && !x.sinCostos ? col(nivelMargen(x.pron.margenPct)) : "inherit"}">${x.pron ? `${fmtCOP(x.pron.margen)} <span class="hint">${fmtPct(x.pron.margenPct)}</span>` : "—"}</div></div>
+      </div>
+      <div class="pcons">
+        <div class="pcons-top"><b>${x.pron ? `Con el ritmo actual terminaría costando ${fmtCOP(x.pron.costo)}${x.pron.horas!=null ? ` y usando ${fmtN(x.pron.horas)} h` : ""}` : x.avance==null ? "Escribe el % de avance para ver el pronóstico al cierre" : `Avance menor al ${AVANCE_MIN_PRONOSTICO} %: todavía no hay pronóstico confiable`}</b>
+          ${x.sinCostos ? "" : `<span class="badge ${NIVEL_BADGE[x.nivel]}">${NIVEL_MARGEN_TXT[x.nivel]}</span>`}</div>
+        ${x.avance!=null ? `<div class="hint">Avance ${fmtPct(x.avance)}${x.consPct!=null ? ` · horas consumidas ${fmtPct(x.consPct)}${x.brecha > BRECHA_AMARILLO ? ` · <b style="color:${col(x.nivelAvance)}">el consumo de horas va ${Math.round(x.brecha)} puntos por delante del avance</b>` : " · avance acorde con las horas"}` : " · sin presupuesto de horas para comparar"}</div>` : ""}
+        ${x.costoOferta!=null ? `<div class="hint">Costo presupuestado ${fmtCOP(x.costoOferta)} (margen ofertado ${fmtPct(x.margenOfertaPct)}) · ${x.pron ? "costo al cierre" : "costo a la fecha"} ${x.desvCosto > 0 ? `<b style="color:var(--bad)">${fmtCOP(x.desvCosto)} por encima</b>` : `${fmtCOP(-x.desvCosto)} por debajo`} de lo presupuestado</div>` : ""}
+        ${x.sinCostos ? `<div class="hint" style="color:var(--bad)">Registra los salarios en ☰ → Costos: sin ellos el costo solo incluye gastos y bono, y el margen sale inflado.</div>` : ""}
+        <div class="hint">Semáforo: amarillo por debajo de ${MARGEN_AMARILLO} %, rojo por debajo de ${MARGEN_ROJO} %. Usa el margen al cierre cuando hay avance; si no, el margen a la fecha.</div>
+      </div>`;
+  }
+  return `<h4 class="cbh">Rentabilidad</h4>${res}${form}`;
+}
+async function saveRentab(projId){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  const num = id=>{ const el = document.getElementById(id); return el && el.value.trim()!=="" ? Number(el.value) : null; };
+  const el = document.getElementById("rf_moneda");
+  const d = { codigo:p.codigo, moneda: el ? el.value : "COP", valorVenta:num("rf_venta"), trm:num("rf_trm"), costoOferta:num("rf_costo"), avance:num("rf_avance") };
+  if([d.valorVenta, d.trm, d.costoOferta].some(v=>v!=null && (isNaN(v) || v < 0))){ showMsg("Los valores deben ser números positivos.", "bad"); return; }
+  if(d.moneda==="USD" && (d.valorVenta!=null || d.costoOferta!=null) && !(d.trm > 0)){ showMsg("Para valores en USD escribe la TRM usada.", "bad"); return; }
+  if(d.moneda!=="USD") d.trm = null;
+  if(d.avance!=null && (isNaN(d.avance) || d.avance < 0 || d.avance > 100)){ showMsg("El % de avance debe estar entre 0 y 100.", "bad"); return; }
+  const prev = finDe(p) || {};
+  d.avanceFecha = d.avance!==(prev.avance ?? null) ? todayStr() : (prev.avanceFecha || (d.avance!=null ? todayStr() : null));
+  try{
+    await db.doc("proyecto_finanzas/"+p.id).set({ ...d, updatedAt:new Date().toISOString() });
+    showMsg("Rentabilidad guardada.", "ok");
+  }catch(err){ showMsg("No se pudo guardar (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
+}
+
 // Página ☰ → Costos (admin): parámetros y salario de cada ingeniero.
 function renderCostos(){
   const cfg = costosParams();
@@ -1963,7 +2149,7 @@ async function saveProject(){
 // Elimina un proyecto de la lista (las horas registradas no se borran).
 async function deleteProject(id){
   pendingConfirm = null;
-  try{ await db.doc("config_projects/"+id).delete(); projSel = ""; showMsg("Proyecto eliminado. Las horas registradas no se borraron.", "ok"); }
+  try{ await db.doc("config_projects/"+id).delete(); if(finanzas[id]) await db.doc("proyecto_finanzas/"+id).delete(); projSel = ""; showMsg("Proyecto eliminado. Las horas registradas no se borraron.", "ok"); }
   catch(err){ showMsg("No se pudo eliminar: " + (err.message||err.code), "bad"); render(); }
 }
 // Guarda la lista completa de órdenes dentro del documento del proyecto.
@@ -2495,7 +2681,7 @@ function stopCompData(){
   compUnsubs.forEach(u=>{ try{ u && u(); }catch(e){} });
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
-  costosCfg = null; costosIng = {}; gastos = [];
+  costosCfg = null; costosIng = {}; gastos = []; finanzas = {};
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real todo lo que necesitan Compensatorios y Bonos (solo con sesión de admin).
@@ -2525,6 +2711,10 @@ function subscribeCompData(){
   compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
     .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); rrCostos(); },
       err=>showGlobalError("Gastos de proyectos (revisa las reglas de Firestore)", err)));
+  // Rentabilidad (Fase 3): valor vendido, costo ofertado y % de avance de cada proyecto.
+  compUnsubs.push(db.collection("proyecto_finanzas").limit(5000)
+    .onSnapshot(snap=>{ finanzas = toMap(snap); rrCostos(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); },
+      err=>showGlobalError("Rentabilidad de proyectos (revisa las reglas de Firestore)", err)));
   compUnsubs.push(db.collection("comp_saldos").limit(500)
     .onSnapshot(snap=>{ compSaldos = toMap(snap); rr(); }, err=>showGlobalError("Saldos iniciales (revisa las reglas de Firestore)", err)));
 }
@@ -2694,11 +2884,16 @@ function alertasArea(){
 async function downloadWordReport(){
   if(!downloadsCap){ showMsg("La descarga no está disponible en esta vista.", "bad"); return; }
   if(typeof JSZip === "undefined"){ showMsg("No se pudo cargar el generador de Word. Intenta de nuevo.", "bad"); return; }
-  await loadConsumoProyectos(); // horas acumuladas de los proyectos con presupuesto
+  await loadConsumoProyectos(); // horas acumuladas de los proyectos con presupuesto o valor vendido
   const r = buildReportData();
   const u = utilizacionMes(r);
   const al = alertasArea();
   const cm = costosDelMes(r); // null si todavía no hay salarios registrados
+  // Rentabilidad (Fase 3): proyectos con valor vendido y datos completos; la sección solo sale si hay alguno.
+  const rent = proyectosConVenta().filter(({x})=>x && !x.sinTrm && !x.cargando && !x.error);
+  const ar = alertasRentabilidad();
+  // Numeración de secciones: la de rentabilidad es opcional, así que las siguientes se corren.
+  const nS = rent.length ? { extra:6, riesgos:7, concl:8 } : { extra:5, riesgos:6, concl:7 };
   const h1 = v => (Number(v)||0).toFixed(1)+" h";
   const pctTxt = v => v==null ? "—" : Math.round(v)+"%";
   const dias = h => fmtN((Number(h)||0)/MAX_HORAS)+" d";
@@ -2727,8 +2922,9 @@ async function downloadWordReport(){
       ["Ausencias", dias(totalAusencia), Object.keys(r.ausencias).length ? Object.entries(r.ausencias).map(([t,h])=>`${t}: ${dias(h)}`).join(" · ") : "Sin ausencias"],
       ["Códigos con horas en el mes", String(proyMes.length), proyMes.length ? ["Proyecto","Servicio","Capacitación"].map(c=>{ const n = proyMes.filter(p=>p.categoria===c).length; return n ? `${n} ${c==="Proyecto" ? (n===1?"proyecto":"proyectos") : c==="Servicio" ? (n===1?"servicio":"servicios") : (n===1?"capacitación":"capacitaciones")}` : ""; }).filter(Boolean).join(" · ") : "—"],
       ["Proyectos en alerta de consumo", String(al.sobre.length), al.sobre.length ? al.sobre.map(x=>`${x.p.codigo} (${Math.round(x.c.pct)}%)`).join(" · ") : "Ninguno sobre el 80 % de su presupuesto"],
+      ...(rent.length && hayCostos() ? [["Proyectos en alerta de margen", String(ar.margen.length), ar.margen.length ? ar.margen.map(({p,x})=>`${p.codigo} (${Math.round(x.margenRef)}%)`).join(" · ") : `Ninguno por debajo del ${MARGEN_AMARILLO} %`]] : []),
       ...(cm ? [["Costo del área en el mes", fmtCOP(cm.total), `${cm.total ? Math.round(cm.noFacturable/cm.total*100) : 0}% en capacitación y apoyo interno (no facturable)`]] : []),
-      ["Bloqueos reportados", String(r.bloqueos.length), r.bloqueos.length ? "Ver sección 6" : "Sin bloqueos"]
+      ["Bloqueos reportados", String(r.bloqueos.length), r.bloqueos.length ? `Ver sección ${nS.riesgos}` : "Sin bloqueos"]
     ]);
     // Hallazgos: solo lo que la tabla de indicadores no dice (dónde se concentraron las horas y quién tiene baja utilización)
     const hall = [];
@@ -2780,7 +2976,6 @@ async function downloadWordReport(){
     body += wp("No se registraron horas en proyectos, servicios ni capacitaciones con código en el periodo.", {italics:true, color:"6B7280"});
   }
 
-  // 4. Horas extra por colaborador (grupos excluyentes: la suma da el total)
   // 4. Costos del mes: mano de obra, recargos, bono de campo y gastos por código
   body += hd("4. Costos del mes");
   if(!cm){
@@ -2793,7 +2988,17 @@ async function downloadWordReport(){
     body += wp(`Costo de la hora = salario × factor prestacional ÷ horas laborales del mes. Recargo solo en horas extra de domingo o festivo pagadas en dinero; las compensadas con tiempo se cuestan como hora normal.${cm.sinSalario.length ? ` Horas sin costear por falta de salario registrado: ${cm.sinSalario.join(", ").replace(/\.$/,"")}.` : ""}`, {italics:true, color:"6B7280", size:16});
   }
 
-  body += hd("5. Horas extra");
+  // 5. Rentabilidad de proyectos (solo si algún proyecto tiene valor vendido)
+  if(rent.length){
+    body += hd("5. Rentabilidad de proyectos");
+    body += wTable(["Código / nombre","Vendido","Costo a la fecha","Margen a la fecha","Avance / horas","Margen al cierre (pronóstico)"], [2780,1500,1500,1300,1400,1600],
+      rent.map(({p,x})=>[`${p.codigo} - ${p.nombre||p.cliente||""}`, fmtCOP(x.venta), fmtCOP(x.costo), `${fmtCOP(x.margen)} (${pctTxt(x.margenPct)})`,
+        `${pctTxt(x.avance)} / ${pctTxt(x.consPct)}`, x.pron ? `${fmtCOP(x.pron.margen)} (${pctTxt(x.pron.margenPct)})` : "—"]));
+    body += wp(`Margen al cierre: pronóstico con el ritmo actual (costo a la fecha ÷ % de avance). Avance / horas: % de avance del proyecto frente al % de horas consumidas de su presupuesto. Alerta de margen por debajo del ${MARGEN_AMARILLO} % y riesgo por debajo del ${MARGEN_ROJO} %.${!hayCostos() ? " Aún no hay salarios registrados: el costo solo incluye gastos y bono de campo." : ""}`, {italics:true, color:"6B7280", size:16});
+  }
+
+  // Horas extra por colaborador (grupos excluyentes: la suma da el total)
+  body += hd(`${nS.extra}. Horas extra`);
   if(r.extras.length){
     body += wTable(["Colaborador","Entre semana","Sábado","Domingo / festivo","Movilización","Total"], [2280,1560,1560,1560,1560,1560],
       r.extras.map(x=>[x.name, h1(x.semana), h1(x.sabado), h1(x.dominical), h1(x.movilizacion), h1(x.total)])
@@ -2803,22 +3008,27 @@ async function downloadWordReport(){
     body += wp("No se registraron horas extra en el periodo.", {italics:true, color:"6B7280"});
   }
 
-  // 5. Riesgos y alertas
-  body += hd("6. Riesgos y alertas");
+  // Riesgos y alertas
+  body += hd(`${nS.riesgos}. Riesgos y alertas`);
   const riesgos = [];
   r.bloqueos.forEach(d=>riesgos.push(["Bloqueo", `${d.fecha} · ${d.engineer} · ${d.proyecto||"—"}: ${d.obs||d.detalle||d.actividad||""}`]));
   al.sobre.forEach(({p,c})=>riesgos.push([c.nivel==="bad" ? "Sobre presupuesto" : "Cerca del límite", `${p.codigo} - ${p.nombre||""}: ${fmtN(c.horas)} de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)}%)`]));
   al.vencen.forEach(p=>{ const d = diasHasta(p.fechaFin); riesgos.push(["Contrato por vencer", `${p.codigo} - ${p.nombre||p.cliente||""}: ${d<0 ? "venció el" : "vence el"} ${p.fechaFin}${d>=0 ? ` (${d} días)` : ""}`]); });
   al.pendPago.forEach(p=>riesgos.push(["Pendiente de pago", `${p.codigo} - ${p.nombre||p.cliente||""}`]));
+  ar.margen.forEach(({p,x})=>riesgos.push([x.nivel==="bad" ? "Margen en riesgo" : "Margen bajo", `${p.codigo} - ${p.nombre||""}: margen ${x.pron ? "pronosticado al cierre" : "a la fecha"} ${Math.round(x.margenRef)}%`]));
+  ar.avance.forEach(({p,x})=>riesgos.push(["Avance atrasado", `${p.codigo} - ${p.nombre||""}: ${Math.round(x.avance)}% de avance con ${Math.round(x.consPct)}% de las horas consumidas`]));
   if(al.ordAbiertas) riesgos.push(["Órdenes abiertas", `${al.ordAbiertas} orden(es) de contratos vigentes por ejecutar`]);
   body += riesgos.length ? wTable(["Tipo","Detalle"], [2300,7780], riesgos) : wp("Sin riesgos ni alertas en el periodo.", {italics:true, color:"6B7280"});
 
-  // 6. Conclusiones y acciones recomendadas: solo las que salen de los datos del mes
-  body += hd("7. Conclusiones y acciones recomendadas");
+  // Conclusiones y acciones recomendadas: solo las que salen de los datos del mes
+  body += hd(`${nS.concl}. Conclusiones y acciones recomendadas`);
   const acc = [];
-  if(r.bloqueos.length) acc.push(`Atender ${r.bloqueos.length === 1 ? "el bloqueo reportado" : `los ${r.bloqueos.length} bloqueos reportados`} (sección 6).`);
+  if(r.bloqueos.length) acc.push(`Atender ${r.bloqueos.length === 1 ? "el bloqueo reportado" : `los ${r.bloqueos.length} bloqueos reportados`} (sección ${nS.riesgos}).`);
   al.sobre.filter(x=>x.c.nivel==="bad").forEach(({p,c})=>acc.push(`Revisar alcance y horas pendientes del ${p.codigo}: ya consumió el ${Math.round(c.pct)}% de su presupuesto.`));
   al.sobre.filter(x=>x.c.nivel==="warn").forEach(({p,c})=>acc.push(`Vigilar el ${p.codigo}: va en ${Math.round(c.pct)}% de su presupuesto.`));
+  ar.margen.filter(({x})=>x.nivel==="bad").forEach(({p,x})=>acc.push(`Revisar costos y alcance del ${p.codigo}: su margen ${x.pron ? "pronosticado al cierre" : "a la fecha"} es ${Math.round(x.margenRef)}%.`));
+  ar.margen.filter(({x})=>x.nivel==="warn").forEach(({p,x})=>acc.push(`Vigilar el margen del ${p.codigo}: va en ${Math.round(x.margenRef)}% ${x.pron ? "pronosticado al cierre" : "a la fecha"}, por debajo del ${MARGEN_AMARILLO} % esperado.`));
+  ar.avance.filter(({p})=>!ar.margen.some(m=>m.p.id===p.id && m.x.nivel==="bad")).forEach(({p,x})=>acc.push(`Verificar el avance real del ${p.codigo}: las horas consumidas (${Math.round(x.consPct)}%) van por delante del avance (${Math.round(x.avance)}%).`));
   al.vencen.forEach(p=>acc.push(`Gestionar la renovación o el cierre del contrato ${p.codigo} con ${p.cliente||"el cliente"}.`));
   if(al.pendPago.length) acc.push(`Hacer seguimiento al cobro de ${al.pendPago.map(p=>p.codigo).join(", ")}.`);
   if(totalDominical) acc.push(`Programar el pago de ${h1(totalDominical)} extra de domingos o festivos, o acordar su compensación.`);
