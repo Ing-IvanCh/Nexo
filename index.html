@@ -419,6 +419,7 @@ tr.prow.psel td{background:var(--accent)}
 //   9. Compensatorios y Bonos .... cálculo de saldos, pagos e informe Word propio
 //  10. Suscripciones ............. lecturas en tiempo real de Firebase (onSnapshot)
 //  11. Informes .................. pestaña Informes (indicadores y descargas), informe mensual de gestión (Word) y datos del mes (Excel)
+//      Costos (Fase 2) ........... salarios, costo de la hora, gastos y costo real por proyecto (sección 8, solo admin)
 //  12. Acceso admin e inicio ..... login de administrador e init()
 // Colecciones de Firebase que usa: activities, config, config_engineers, config_projects,
 // comp_ajustes, campo_pagos, comp_saldos (estas tres últimas solo para administradores).
@@ -533,7 +534,7 @@ function showGlobalError(context, err){
 // Confirmación en pantalla pendiente (¿Seguro? Sí/No), en lugar de las ventanas confirm() del navegador.
 let pendingConfirm = null;
 // Menú ☰ de administrador: páginas que no van en la barra principal y si el menú está abierto
-const MENU_PAGES = [["equipo","Equipo"],["compensatorios","Compensatorios"],["bonos","Bonos de campo"]];
+const MENU_PAGES = [["equipo","Equipo"],["compensatorios","Compensatorios"],["bonos","Bonos de campo"],["costos","Costos"]];
 let menuOpen = false;
 // Ventana de inicio de sesión de administrador abierta/cerrada y su mensaje de error.
 let adminLoginOpen = false;
@@ -553,6 +554,10 @@ let campoPagos = {};    // campo_pagos/<ingeniero_fecha>: {pagado, mesPago}
 let compSaldos = {};    // comp_saldos/<slug ingeniero>: {v:2, compHoras, domHoras, bonoDias, domSaldoMesPago, bonoSaldoMesPago}
 let compLoaded = {comp:false, campo:false};
 let compUnsubs = [];
+// Costos (Fase 2, solo admin): parámetros, salarios por ingeniero y gastos de los proyectos
+let costosCfg = null;   // costos/config
+let costosIng = {};     // slug ingeniero -> {engineer, salario}
+let gastos = [];        // proyecto_gastos
 let compSel = "";       // ingeniero abierto en la pestaña Compensatorios
 let bonoSel = "";       // ingeniero abierto en la pestaña Bonos de campo
 let openFolds = new Set(); // secciones plegables abiertas
@@ -640,7 +645,7 @@ function render(){
       ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><input type="month" id="month_sel" value="${selectedMonth}"></div>` : ""}
       <button class="tiny" id="btn_admin_toggle" style="margin-left:auto">${isOwner ? "🔓 Cerrar admin" : "🔒 Admin"}</button>
     </div>
-    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : renderProyectos()}
+    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : view==='costos' ? renderCostos() : renderProyectos()}
     ${adminLoginOpen ? `
     <div class="modal-backdrop" id="admin_modal_backdrop">
       <div class="modal-card card">
@@ -1103,6 +1108,10 @@ async function handleAction(act, ds){
     const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
     return;
   }
+  if(act === "costos-save"){ await saveCostos(); return; }
+  if(act === "gasto-save"){ await saveGasto(ds.proj); return; }
+  if(act === "ask-del-gasto"){ pendingConfirm = {type:"deleteGasto", key: ds.id}; render(); return; }
+  if(act === "confirm-del-gasto"){ await deleteGasto(ds.id); return; }
   if(act === "inf-consumo"){ await loadConsumoProyectos(true); return; }
   if(act === "inf-proj"){ view = "proyectos"; projSel = ds.id; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const pr = projectsList.find(x=>x.id===ds.id); if(pr && !projHoras[pr.id]) loadProjHoras(pr); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-new"){ projSel = "__new__"; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
@@ -1432,7 +1441,7 @@ function renderProjDetalle(){
     </div>
     ${!isNew && p.duplicado ? `<div class="palert bad">Este código está repetido en la base anterior con otro cliente. Revisa las notas.</div>` : ""}
     ${form}
-    ${isNew ? "" : renderOrdenes(p) + renderProjHoras(p)}
+    ${isNew ? "" : renderOrdenes(p) + renderProjHoras(p) + renderProjCosto(p)}
   </div>`;
 }
 
@@ -1517,7 +1526,8 @@ async function loadProjHoras(p, silent){
     ]);
     const by = {};
     let total = 0, extra = 0, n = 0;
-    a.docs.concat(b.docs).map(d=>d.data()).forEach(d=>{
+    const regs = a.docs.concat(b.docs).map(d=>({ _id:d.id, ...d.data() }));
+    regs.forEach(d=>{
       if(AUSENCIA_TYPES.includes(d.tipoHora)) return; // vacaciones, incapacidades, etc. no son horas del proyecto
       const h = Number(d.horas)||0;
       const r = by[d.engineer] || (by[d.engineer] = { engineer:d.engineer, horas:0, extra:0, n:0, desde:d.fecha||"", hasta:d.fecha||"" });
@@ -1526,7 +1536,7 @@ async function loadProjHoras(p, silent){
       if(d.fecha && (!r.desde || d.fecha < r.desde)) r.desde = d.fecha;
       if(d.fecha && d.fecha > r.hasta) r.hasta = d.fecha;
     });
-    projHoras[p.id] = { rows: Object.values(by).sort((x,y)=>y.horas-x.horas), total, extra, n };
+    projHoras[p.id] = { rows: Object.values(by).sort((x,y)=>y.horas-x.horas), total, extra, n, regs };
   }catch(err){
     projHoras[p.id] = { error: err.message||err.code };
   }
@@ -1668,6 +1678,205 @@ function renderInformes(){
       : `<div class="empty">Ningún proyecto tiene presupuesto todavía. Escríbelo en la pestaña Proyectos (dato de la transferencia de oferta).</div>`}
     ${sinPres.length && lista.length ? `<div class="hint" style="margin-top:8px">Proyectos activos sin presupuesto: ${sinPres.map(p=>escH(p.codigo)).join(", ")}.</div>` : ""}
   </div>`;
+}
+
+// ---------- Fase 2: costo real de los proyectos (solo administradores) ----------
+// Colecciones (solo admin): costos/config {factor, horasMes, recargoDominical, valorBono},
+// costos/ing_<slug> {engineer, salario}, proyecto_gastos/<id> {proyId, codigo, fecha, categoria, concepto, valor}.
+// Costo de la hora = salario mensual × factor prestacional ÷ horas laborales del mes.
+// Horas normales y extra compensadas con tiempo: a costo de la hora. Extra de domingo/festivo pagada en dinero:
+// costo de la hora + recargo. Bono de campo: valor por día en campo, repartido entre los proyectos de ese día.
+const COSTOS_DEFAULT = { factor:1.52, horasMes:182, recargoDominical:115, valorBono:0 };
+const CATEGORIAS_GASTO = ["Viáticos","Transporte","Hospedaje","Alimentación","Materiales y equipos","Subcontratos","Otros"];
+function fmtCOP(v){ return (Number(v)||0).toLocaleString("es-CO", { style:"currency", currency:"COP", maximumFractionDigits:0 }); }
+function costosParams(){ return { ...COSTOS_DEFAULT, ...(costosCfg||{}) }; }
+// Código de proyecto de un texto "código - nombre" (o el texto completo si no empieza por código).
+function codigoProyecto(label){ const t = String(label||"").trim(); const m = t.match(/^(\d[\w-]*)\s*(?:-\s|$)/); return m ? m[1] : t; }
+function salarioDe(name){ const c = costosIng[slugify(name)]; return c && Number(c.salario) > 0 ? Number(c.salario) : null; }
+// Costo de una hora del ingeniero, o null si no tiene salario registrado.
+function costoHora(name){
+  const s = salarioDe(name); if(s==null) return null;
+  const cfg = costosParams();
+  return cfg.horasMes > 0 ? s * cfg.factor / cfg.horasMes : null;
+}
+function hayCostos(){ return Object.keys(costosIng).some(k=>Number((costosIng[k]||{}).salario) > 0); }
+// Costo de mano de obra de una lista de registros (sin ausencias).
+function costoRegistros(regs){
+  const cfg = costosParams();
+  const r = { normal:0, extra:0, recargo:0, horasSinCosto:0, sinSalario:new Set(), porIng:{} };
+  regs.forEach(d=>{
+    const tipo = d.tipoHora || "Normal";
+    if(AUSENCIA_TYPES.includes(tipo)) return;
+    const h = Number(d.horas)||0; if(!h) return;
+    const ch = costoHora(d.engineer);
+    if(ch==null){ r.horasSinCosto += h; r.sinSalario.add(d.engineer); return; }
+    const base = h * ch;
+    // La extra de domingo/festivo pagada en dinero lleva recargo; la compensada con tiempo cuesta lo mismo que una hora normal
+    const rec = tipo==="Extra" && tratamientoDe(d)==="Pago" ? base * cfg.recargoDominical / 100 : 0;
+    if(tipo==="Extra") r.extra += base; else r.normal += base;
+    r.recargo += rec;
+    const pi = r.porIng[d.engineer] || (r.porIng[d.engineer] = { horas:0, costo:0 });
+    pi.horas += h; pi.costo += base + rec;
+  });
+  r.manoObra = r.normal + r.extra + r.recargo;
+  return r;
+}
+// Costo del bono de campo por código de proyecto, para los días en campo dentro del rango [desde, hasta].
+function bonoPorCodigo(desde, hasta){
+  const cfg = costosParams(), out = {};
+  if(!(cfg.valorBono > 0) || !(compLoaded.comp && compLoaded.campo)) return out;
+  Object.values(computeCompBonos()).forEach(r=>r.dias.forEach(x=>{
+    if((desde && x.fecha < desde) || (hasta && x.fecha > hasta)) return;
+    const cods = [...new Set([...x.proyectos].map(codigoProyecto))];
+    if(!cods.length) return;
+    cods.forEach(c=>{ out[c] = (out[c]||0) + cfg.valorBono / cods.length; });
+  }));
+  return out;
+}
+function gastosDe(p){ return gastos.filter(g=>g.proyId===p.id).sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")); }
+// Costo acumulado del proyecto: mano de obra + recargos + bono de campo + gastos.
+function costoProyecto(p){
+  const h = projHoras[p.id];
+  if(!h || h.loading) return { cargando:true };
+  if(h.error) return { error:h.error };
+  const mo = costoRegistros(h.regs || []);
+  const bono = bonoPorCodigo(null, null)[String(p.codigo||"").trim()] || 0;
+  const gas = gastosDe(p).reduce((a,g)=>a+(Number(g.valor)||0), 0);
+  return { mo, bono, gastos:gas, total: mo.manoObra + bono + gas };
+}
+
+// Sección "Costo del proyecto" de la ficha: resumen, costo por ingeniero y gastos registrados.
+function renderProjCosto(p){
+  const c = costoProyecto(p);
+  let resumen;
+  if(c.cargando) resumen = `<div class="hint">Calculando…</div>`;
+  else if(c.error) resumen = `<div class="hint">No se pudo calcular: ${escH(c.error)}</div>`;
+  else {
+    const ings = Object.entries(c.mo.porIng).sort((a,b)=>b[1].costo-a[1].costo);
+    resumen = `<div class="kpis">
+        <div class="kpi"><div class="kpi-l">Mano de obra</div><div class="kpi-v">${fmtCOP(c.mo.normal + c.mo.extra)}</div></div>
+        <div class="kpi"><div class="kpi-l">Recargos dom./fest.</div><div class="kpi-v">${fmtCOP(c.mo.recargo)}</div></div>
+        <div class="kpi"><div class="kpi-l">Bono de campo</div><div class="kpi-v">${fmtCOP(c.bono)}</div></div>
+        <div class="kpi"><div class="kpi-l">Gastos</div><div class="kpi-v">${fmtCOP(c.gastos)}</div></div>
+      </div>
+      <div class="pcons"><div class="pcons-top"><b>Costo acumulado del proyecto: ${fmtCOP(c.total)}</b></div>
+        ${c.mo.horasSinCosto ? `<div class="hint" style="color:var(--bad)">${fmtN(c.mo.horasSinCosto)} h sin costear: falta el salario de ${[...c.mo.sinSalario].map(escH).join(", ")} (☰ → Costos).</div>` : ""}
+        ${!hayCostos() ? `<div class="hint">Registra los salarios en ☰ → Costos para calcular la mano de obra.</div>` : ""}
+        ${!(costosParams().valorBono > 0) ? `<div class="hint">El bono de campo no se está costeando: falta su valor por día en ☰ → Costos.</div>` : ""}
+      </div>
+      ${ings.length ? cbTable(["Ingeniero","Horas","Costo (incluye recargos)"], ings.map(([n,v])=>`<tr><td data-label="Ingeniero"><b>${escH(n)}</b></td><td data-label="Horas">${fmtN(v.horas)} h</td><td data-label="Costo">${fmtCOP(v.costo)}</td></tr>`).join("")) : ""}`;
+  }
+  const gs = gastosDe(p);
+  const gRows = gs.map(g=>{
+    const confirming = pendingConfirm && pendingConfirm.type==="deleteGasto" && pendingConfirm.key===g.id;
+    return `<tr><td data-label="Fecha">${g.fecha||"—"}</td><td data-label="Categoría">${escH(g.categoria||"")}</td><td data-label="Concepto">${escH(g.concepto||"")}</td>
+      <td data-label="Valor"><b>${fmtCOP(g.valor)}</b></td>
+      <td data-label="">${confirming ? `<span class="confirmrow">¿Eliminar? <button class="tiny bad" data-act="confirm-del-gasto" data-id="${escH(g.id)}">Sí</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
+        : `<button class="tiny bad" data-act="ask-del-gasto" data-id="${escH(g.id)}">Eliminar</button>`}</td></tr>`;
+  }).join("");
+  const formGasto = `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>Nuevo gasto</b> — viáticos, transporte, materiales, subcontratos…</div>
+      <div class="row2">
+        <div><label>Fecha</label><input type="date" id="gf_fecha" value="${todayStr()}"></div>
+        <div><label>Categoría</label><select id="gf_cat">${selOpts(CATEGORIAS_GASTO, "Viáticos")}</select></div>
+      </div>
+      <div class="row2">
+        <div><label>Concepto</label><input id="gf_concepto" placeholder="Ej: Tiquetes Bogotá - Yopal"></div>
+        <div><label>Valor (COP)</label><input type="number" id="gf_valor" min="0" step="1" placeholder="Ej: 850000"></div>
+      </div>
+      <button class="primary" data-act="gasto-save" data-proj="${escH(p.id)}" style="margin-top:10px">Agregar gasto</button>
+    </div>`;
+  return `<h4 class="cbh">Costo del proyecto</h4>${resumen}
+    <h4 class="cbh">Gastos del proyecto (${gs.length})</h4>
+    ${gRows ? cbTable(["Fecha","Categoría","Concepto","Valor",""], gRows) : `<div class="hint">Sin gastos registrados.</div>`}
+    ${formGasto}`;
+}
+
+async function saveGasto(projId){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  const v = id=>{ const el=document.getElementById(id); return el ? el.value.trim() : ""; };
+  const valor = Number(v("gf_valor"));
+  if(!v("gf_concepto")){ showMsg("Escribe el concepto del gasto.", "bad"); return; }
+  if(!(valor > 0)){ showMsg("El valor del gasto debe ser mayor que cero.", "bad"); return; }
+  try{
+    await db.collection("proyecto_gastos").add({ proyId:p.id, codigo:p.codigo, fecha:v("gf_fecha") || todayStr(), categoria:v("gf_cat"), concepto:v("gf_concepto"), valor, createdAt:new Date().toISOString() });
+    showMsg("Gasto agregado.", "ok");
+  }catch(err){ showMsg("No se pudo guardar el gasto (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
+}
+async function deleteGasto(id){
+  pendingConfirm = null;
+  try{ await db.doc("proyecto_gastos/"+id).delete(); showMsg("Gasto eliminado.", "ok"); }
+  catch(err){ showMsg("No se pudo eliminar: " + (err.message||err.code), "bad"); render(); }
+}
+
+// Página ☰ → Costos (admin): parámetros y salario de cada ingeniero.
+function renderCostos(){
+  const cfg = costosParams();
+  const filas = engineerNames().map(n=>{
+    const s = salarioDe(n), ch = costoHora(n);
+    return `<tr><td data-label="Ingeniero"><b>${escH(n)}</b></td>
+      <td data-label="Salario mensual"><input type="number" class="sal_input" data-eng="${escH(n)}" min="0" step="1000" value="${s!=null?s:""}" placeholder="Ej: 6500000" style="max-width:180px"></td>
+      <td data-label="Costo por hora">${ch!=null ? fmtCOP(ch) : `<span class="hint">—</span>`}</td></tr>`;
+  }).join("");
+  return `<div class="card">
+    <div class="admin-note">Valores para calcular el costo real de los proyectos. Solo los ven los administradores. <b>Costo de la hora = salario × factor prestacional ÷ horas laborales del mes.</b> Confirma los valores con contabilidad y nómina.</div>
+    <h4 class="cbh" style="margin-top:0">Parámetros</h4>
+    <div class="row2">
+      <div><label>Factor prestacional</label><input type="number" id="cf_factor" step="0.01" min="1" value="${cfg.factor}"><div class="hint">Salario + prestaciones, seguridad social y parafiscales. Ej: 1.52</div></div>
+      <div><label>Horas laborales al mes</label><input type="number" id="cf_horas" step="1" min="1" value="${cfg.horasMes}"><div class="hint">42 h/semana × 52 ÷ 12 = 182 (jornada desde el 15-jul-2026)</div></div>
+    </div>
+    <div class="row2">
+      <div><label>Recargo hora extra dominical/festiva pagada (%)</label><input type="number" id="cf_recargo" step="1" min="0" value="${cfg.recargoDominical}"><div class="hint">25 % de extra + 90 % dominical desde el 1-jul-2026 = 115 %</div></div>
+      <div><label>Valor del bono de campo por día (COP)</label><input type="number" id="cf_bono" step="1000" min="0" value="${cfg.valorBono||""}" placeholder="Ej: 120000"></div>
+    </div>
+    <h4 class="cbh">Salario mensual por ingeniero</h4>
+    ${filas ? cbTable(["Ingeniero","Salario mensual (COP)","Costo por hora"], filas) : `<div class="empty">Sin ingenieros configurados.</div>`}
+    <button class="primary" data-act="costos-save" style="margin-top:12px">Guardar costos</button>
+    <div class="msg ${formMsg?formMsgType:""}" id="msgbox4" style="margin-top:10px">${formMsg}</div>
+  </div>`;
+}
+async function saveCostos(){
+  const num = id=>{ const el = document.getElementById(id); return el && el.value.trim()!=="" ? Number(el.value) : null; };
+  const cfg = { factor:num("cf_factor"), horasMes:num("cf_horas"), recargoDominical:num("cf_recargo"), valorBono:num("cf_bono") ?? 0 };
+  if(!(cfg.factor >= 1)){ showMsg("El factor prestacional debe ser 1 o mayor.", "bad"); return; }
+  if(!(cfg.horasMes > 0)){ showMsg("Las horas laborales al mes deben ser mayores que cero.", "bad"); return; }
+  if(cfg.recargoDominical==null || cfg.recargoDominical < 0 || cfg.valorBono < 0){ showMsg("Revisa el recargo y el valor del bono.", "bad"); return; }
+  const sal = [...document.querySelectorAll(".sal_input")].map(el=>({ eng:el.dataset.eng, v: el.value.trim()==="" ? null : Number(el.value) }));
+  if(sal.some(x=>x.v!=null && (isNaN(x.v) || x.v < 0))){ showMsg("Revisa los salarios: deben ser números positivos.", "bad"); return; }
+  try{
+    await db.doc("costos/config").set({ ...cfg, updatedAt:new Date().toISOString() });
+    await Promise.all(sal.map(x=>db.doc("costos/ing_"+slugify(x.eng)).set({ engineer:x.eng, salario:x.v, updatedAt:new Date().toISOString() })));
+    showMsg("Costos guardados.", "ok");
+  }catch(err){ showMsg("No se pudieron guardar (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
+}
+
+// Costos del mes para el informe: mano de obra por código (y no facturable), bonos y gastos del mes.
+function costosDelMes(r){
+  if(!hayCostos()) return null;
+  const regs = allEntries.filter(d=>!AUSENCIA_TYPES.includes(d.tipoHora||"Normal"));
+  const porCod = {};
+  regs.forEach(d=>{
+    const cat = proyectoCategoria(d.proyecto);
+    const k = ["Proyecto","Servicio","Capacitación"].includes(cat) ? codigoProyecto(d.proyecto) : "__interno";
+    (porCod[k] || (porCod[k] = { regs:[], cat })).regs.push(d);
+  });
+  const bonos = bonoPorCodigo(r.start, r.end);
+  const gasMes = gastos.filter(g=>g.fecha >= r.start && g.fecha <= r.end);
+  const filas = {};
+  const fila = (k, cat)=> filas[k] || (filas[k] = { codigo:k, cat, mo:0, recargo:0, bono:0, gastos:0, sinCosto:0 });
+  Object.entries(porCod).forEach(([k,v])=>{ const c = costoRegistros(v.regs); const f = fila(k, v.cat); f.mo += c.normal + c.extra; f.recargo += c.recargo; f.sinCosto += c.horasSinCosto; });
+  Object.entries(bonos).forEach(([k,v])=>{ fila(k, proyectoCategoria(k)).bono += v; });
+  gasMes.forEach(g=>{ const k = String(g.codigo||"").trim() || "__interno"; fila(k, proyectoCategoria(k)).gastos += Number(g.valor)||0; });
+  const lista = Object.values(filas).map(f=>{
+    const pr = projectsList.find(x=>String(x.codigo||"").trim()===f.codigo);
+    f.nombre = f.codigo==="__interno" ? "Apoyo interno / sin código (no facturable)" : (pr ? projectOptionLabel(pr) : f.codigo);
+    f.total = f.mo + f.recargo + f.bono + f.gastos;
+    return f;
+  }).sort((a,b)=> (a.codigo==="__interno") - (b.codigo==="__interno") || b.total - a.total);
+  const tot = k => lista.reduce((a,f)=>a+f[k],0);
+  const sinSalario = [...new Set(regs.filter(d=>costoHora(d.engineer)==null).map(d=>d.engineer))];
+  return { lista, mo:tot("mo"), recargo:tot("recargo"), bono:tot("bono"), gastos:tot("gastos"), total:tot("total"),
+    noFacturable: lista.filter(f=>f.codigo==="__interno" || f.cat==="Capacitación").reduce((a,f)=>a+f.total,0), sinSalario };
 }
 
 // Lee los campos del formulario del proyecto.
@@ -2239,6 +2448,7 @@ function stopCompData(){
   compUnsubs.forEach(u=>{ try{ u && u(); }catch(e){} });
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
+  costosCfg = null; costosIng = {}; gastos = [];
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real todo lo que necesitan Compensatorios y Bonos (solo con sesión de admin).
@@ -2246,6 +2456,7 @@ function subscribeCompData(){
   stopCompData();
   if(!db || !isOwner) return;
   const rr = ()=>{ if(view==="compensatorios" || view==="bonos") render(); };
+  const rrCostos = ()=>{ if(view==="costos" || view==="proyectos" || view==="informes") render(); };
   const toMap = snap=>{ const m = {}; snap.docs.forEach(d=>{ m[d.id] = d.data(); }); return m; };
   // Consultas de un solo campo (sin orderBy) para no requerir índices compuestos; se ordena en el navegador.
   // Horas Extra (generan compensatorio o pago) y días Compensatorio (descuentan).
@@ -2260,6 +2471,13 @@ function subscribeCompData(){
     .onSnapshot(snap=>{ compAjustes = toMap(snap); rr(); }, err=>showGlobalError("Ajustes de compensatorios (revisa las reglas de Firestore)", err)));
   compUnsubs.push(db.collection("campo_pagos").limit(5000)
     .onSnapshot(snap=>{ campoPagos = toMap(snap); rr(); }, err=>showGlobalError("Pagos de bono de campo (revisa las reglas de Firestore)", err)));
+  // Costos (Fase 2): parámetros y salarios, y gastos de los proyectos.
+  compUnsubs.push(db.collection("costos").limit(500)
+    .onSnapshot(snap=>{ const m = {}; let cfg = null; snap.docs.forEach(d=>{ if(d.id==="config") cfg = d.data(); else if(d.id.startsWith("ing_")) m[d.id.slice(4)] = d.data(); }); costosCfg = cfg; costosIng = m; rrCostos(); },
+      err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
+  compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
+    .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); rrCostos(); },
+      err=>showGlobalError("Gastos de proyectos (revisa las reglas de Firestore)", err)));
   compUnsubs.push(db.collection("comp_saldos").limit(500)
     .onSnapshot(snap=>{ compSaldos = toMap(snap); rr(); }, err=>showGlobalError("Saldos iniciales (revisa las reglas de Firestore)", err)));
 }
@@ -2432,6 +2650,7 @@ async function downloadWordReport(){
   const r = buildReportData();
   const u = utilizacionMes(r);
   const al = alertasArea();
+  const cm = costosDelMes(r); // null si todavía no hay salarios registrados
   const h1 = v => (Number(v)||0).toFixed(1)+" h";
   const pctTxt = v => v==null ? "—" : Math.round(v)+"%";
   const dias = h => fmtN((Number(h)||0)/MAX_HORAS)+" d";
@@ -2460,7 +2679,8 @@ async function downloadWordReport(){
       ["Ausencias", dias(totalAusencia), Object.keys(r.ausencias).length ? Object.entries(r.ausencias).map(([t,h])=>`${t}: ${dias(h)}`).join(" · ") : "Sin ausencias"],
       ["Códigos con horas en el mes", String(proyMes.length), proyMes.length ? ["Proyecto","Servicio","Capacitación"].map(c=>{ const n = proyMes.filter(p=>p.categoria===c).length; return n ? `${n} ${c==="Proyecto" ? (n===1?"proyecto":"proyectos") : c==="Servicio" ? (n===1?"servicio":"servicios") : (n===1?"capacitación":"capacitaciones")}` : ""; }).filter(Boolean).join(" · ") : "—"],
       ["Proyectos en alerta de consumo", String(al.sobre.length), al.sobre.length ? al.sobre.map(x=>`${x.p.codigo} (${Math.round(x.c.pct)}%)`).join(" · ") : "Ninguno sobre el 80 % de su presupuesto"],
-      ["Bloqueos reportados", String(r.bloqueos.length), r.bloqueos.length ? "Ver sección 5" : "Sin bloqueos"]
+      ...(cm ? [["Costo del área en el mes", fmtCOP(cm.total), `${cm.total ? Math.round(cm.noFacturable/cm.total*100) : 0}% en capacitación y apoyo interno (no facturable)`]] : []),
+      ["Bloqueos reportados", String(r.bloqueos.length), r.bloqueos.length ? "Ver sección 6" : "Sin bloqueos"]
     ]);
     // Hallazgos: solo lo que la tabla de indicadores no dice (dónde se concentraron las horas y quién tiene baja utilización)
     const hall = [];
@@ -2513,7 +2733,19 @@ async function downloadWordReport(){
   }
 
   // 4. Horas extra por colaborador (grupos excluyentes: la suma da el total)
-  body += hd("4. Horas extra");
+  // 4. Costos del mes: mano de obra, recargos, bono de campo y gastos por código
+  body += hd("4. Costos del mes");
+  if(!cm){
+    body += wp("Aún no hay salarios registrados: los costos se calculan cuando se configuran en la página Costos de la aplicación.", {italics:true, color:"6B7280"});
+  } else {
+    body += wp(`Costo total del área en el periodo: ${fmtCOP(cm.total)} (mano de obra ${fmtCOP(cm.mo)}, recargos ${fmtCOP(cm.recargo)}, bono de campo ${fmtCOP(cm.bono)} y gastos ${fmtCOP(cm.gastos)}). De este total, ${fmtCOP(cm.noFacturable)} (${cm.total ? Math.round(cm.noFacturable/cm.total*100) : 0}%) corresponde a capacitación y apoyo interno, que no se factura.`, {keepNext:true});
+    body += wTable(["Código / nombre","Mano de obra","Recargos","Bono de campo","Gastos","Total del mes"], [3280,1400,1250,1300,1250,1600],
+      cm.lista.map(f=>[f.nombre, fmtCOP(f.mo), fmtCOP(f.recargo), fmtCOP(f.bono), fmtCOP(f.gastos), fmtCOP(f.total)])
+        .concat([["Total del área", fmtCOP(cm.mo), fmtCOP(cm.recargo), fmtCOP(cm.bono), fmtCOP(cm.gastos), fmtCOP(cm.total)]]));
+    body += wp(`Costo de la hora = salario × factor prestacional ÷ horas laborales del mes. Recargo solo en horas extra de domingo o festivo pagadas en dinero; las compensadas con tiempo se cuestan como hora normal.${cm.sinSalario.length ? ` Horas sin costear por falta de salario registrado: ${cm.sinSalario.join(", ").replace(/\.$/,"")}.` : ""}`, {italics:true, color:"6B7280", size:16});
+  }
+
+  body += hd("5. Horas extra");
   if(r.extras.length){
     body += wTable(["Colaborador","Entre semana","Sábado","Domingo / festivo","Movilización","Total"], [2280,1560,1560,1560,1560,1560],
       r.extras.map(x=>[x.name, h1(x.semana), h1(x.sabado), h1(x.dominical), h1(x.movilizacion), h1(x.total)])
@@ -2524,7 +2756,7 @@ async function downloadWordReport(){
   }
 
   // 5. Riesgos y alertas
-  body += hd("5. Riesgos y alertas");
+  body += hd("6. Riesgos y alertas");
   const riesgos = [];
   r.bloqueos.forEach(d=>riesgos.push(["Bloqueo", `${d.fecha} · ${d.engineer} · ${d.proyecto||"—"}: ${d.obs||d.detalle||d.actividad||""}`]));
   al.sobre.forEach(({p,c})=>riesgos.push([c.nivel==="bad" ? "Sobre presupuesto" : "Cerca del límite", `${p.codigo} - ${p.nombre||""}: ${fmtN(c.horas)} de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)}%)`]));
@@ -2534,9 +2766,9 @@ async function downloadWordReport(){
   body += riesgos.length ? wTable(["Tipo","Detalle"], [2300,7780], riesgos) : wp("Sin riesgos ni alertas en el periodo.", {italics:true, color:"6B7280"});
 
   // 6. Conclusiones y acciones recomendadas: solo las que salen de los datos del mes
-  body += hd("6. Conclusiones y acciones recomendadas");
+  body += hd("7. Conclusiones y acciones recomendadas");
   const acc = [];
-  if(r.bloqueos.length) acc.push(`Atender ${r.bloqueos.length === 1 ? "el bloqueo reportado" : `los ${r.bloqueos.length} bloqueos reportados`} (sección 5).`);
+  if(r.bloqueos.length) acc.push(`Atender ${r.bloqueos.length === 1 ? "el bloqueo reportado" : `los ${r.bloqueos.length} bloqueos reportados`} (sección 6).`);
   al.sobre.filter(x=>x.c.nivel==="bad").forEach(({p,c})=>acc.push(`Revisar alcance y horas pendientes del ${p.codigo}: ya consumió el ${Math.round(c.pct)}% de su presupuesto.`));
   al.sobre.filter(x=>x.c.nivel==="warn").forEach(({p,c})=>acc.push(`Vigilar el ${p.codigo}: va en ${Math.round(c.pct)}% de su presupuesto.`));
   al.vencen.forEach(p=>acc.push(`Gestionar la renovación o el cierre del contrato ${p.codigo} con ${p.cliente||"el cliente"}.`));
@@ -2546,6 +2778,7 @@ async function downloadWordReport(){
   if(bajaUtil2.length) acc.push(`Revisar la asignación de ${bajaUtil2.map(f=>f.name).join(", ")} a proyectos o servicios facturables.`);
   if((r.horasCat["Apoyo interno / sin código"]||0) > 0) acc.push(`Asignar código a las actividades registradas sin proyecto, para que sus horas se puedan atribuir.`);
   if(al.activosSinPres.length) acc.push(`Registrar el presupuesto de horas de ${al.activosSinPres.length} proyecto(s) activo(s) para medir su consumo: ${al.activosSinPres.map(p=>p.codigo).join(", ")}.`);
+  if(cm && cm.sinSalario.length) acc.push(`Registrar el salario de ${cm.sinSalario.join(", ")} para costear todas sus horas.`);
   if(r.sinRegistros.length) acc.push(`Validar con ${r.sinRegistros.join(" y ")} la falta de registros en el periodo.`);
   if(acc.length) acc.forEach(t=>{ body += wBullet(t); });
   else body += wp("El periodo no presenta alertas que requieran acción.", {color:"374151"});
@@ -2813,7 +3046,7 @@ async function init(){
     isOwner = window.__firebaseAuth.isAdminNow();
     if(wasOwner !== isOwner){
       if(isOwner) subscribeCompData();
-      else { stopCompData(); if(view==="compensatorios" || view==="bonos" || view==="informes") view = "form"; }
+      else { stopCompData(); if(["compensatorios","bonos","informes","costos"].includes(view)) view = "form"; }
       render();
     }
   });
