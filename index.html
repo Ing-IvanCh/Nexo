@@ -230,11 +230,10 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.015em;color:var(--text);marg
 .toolbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:18px}
 .monthbox{margin-left:auto;display:flex;align-items:center;gap:8px;min-width:0;padding:2px 6px}
 .monthbox label{margin:0;font-size:13px;color:var(--sub);font-weight:500}
-.monthbox select{
-  width:auto;margin:0;padding:6px 10px;border-radius:var(--radius-sm);border:none;background:var(--fill-strong);
-  color:var(--text);font-size:16px;min-width:0;max-width:180px
+.monthbox input{
+  padding:6px 10px;border-radius:var(--radius-sm);border:none;background:var(--fill-strong);
+  color:var(--text);font-size:16px;min-width:0;width:215px;max-width:215px
 }
-.monthbox .tiny{margin:0;padding:6px 10px}
 
 /* Tarjetas (paneles de vidrio). */
 .card{
@@ -271,7 +270,7 @@ select:focus,input:focus,textarea:focus{
 textarea{resize:vertical;min-height:54px;line-height:1.45}
 .row2{display:grid;grid-template-columns:1fr 1fr;gap:12px;min-width:0}
 .row2>div{min-width:0}
-@media(max-width:560px){.row2{grid-template-columns:1fr}.monthbox{margin-left:0;width:100%}.monthbox select{max-width:none;flex:1}.toolbar .tiny{margin-left:auto}}
+@media(max-width:560px){.row2{grid-template-columns:1fr}.monthbox{margin-left:0;width:100%}.monthbox input{max-width:none;width:auto;flex:1}.toolbar .tiny{margin-left:auto}}
 
 /* Botones: primary (azul, principal), secondary (gris), tiny (pequeños de las tablas). */
 button{font-family:inherit}
@@ -689,6 +688,8 @@ let compLoaded = {comp:false, campo:false};
 let compUnsubs = [];
 // Costos (Fase 2, solo admin): parámetros, salarios por ingeniero y gastos de los proyectos
 let costosCfg = null;   // costos/config
+let costosCargado = false;   // ya llegaron los costos guardados (antes de eso no se deja guardar, para no sobrescribir con vacíos)
+let costosBorrador = {};     // lo que se ha escrito en la página Costos y aún no se guarda {id del campo: valor}
 let costosIng = {};     // slug ingeniero -> {engineer, salario}
 let gastos = [];        // proyecto_gastos
 let finanzas = {};      // proyecto_finanzas/<id proyecto>: valor vendido, costo ofertado y % de avance (Fase 3)
@@ -722,22 +723,6 @@ function monthLabel(ym){
   const meses = ["enero","febrero","marzo","abril","mayo","junio","julio","agosto","septiembre","octubre","noviembre","diciembre"];
   const [y,m] = ym.split("-").map(Number);
   return meses[m-1] + " " + y;
-}
-// Suma n meses a '2026-10' (n puede ser negativo).
-function sumarMes(ym, n){
-  const [y,m] = ym.split("-").map(Number);
-  const d = new Date(y, m-1+n, 1);
-  return d.getFullYear() + "-" + String(d.getMonth()+1).padStart(2,"0");
-}
-// Opciones del selector de mes, siempre en español (el control nativo del navegador sale en el idioma del equipo):
-// desde enero de 2025 hasta 3 meses adelante, incluyendo siempre el mes seleccionado.
-function opcionesMes(){
-  const hasta = sumarMes(todayStr().slice(0,7), 3);
-  let ini = "2025-01"; if(selectedMonth < ini) ini = selectedMonth;
-  const fin = selectedMonth > hasta ? selectedMonth : hasta;
-  const meses = [];
-  for(let ym = fin; ym >= ini; ym = sumarMes(ym, -1)) meses.push(ym);
-  return meses.map(ym=>`<option value="${ym}" ${ym===selectedMonth?"selected":""}>${monthLabel(ym)}</option>`).join("");
 }
 // Convierte un texto en un id válido para Firebase (minúsculas, sin tildes ni espacios).
 function sanitizeId(s){
@@ -795,7 +780,7 @@ function render(){
       ${barra.map(([v,l])=>`<div class="tab ${view===v?'active':''}" data-tab="${v}">${l}</div>`).join("\n      ")}
     </div>
     <div class="toolbar">
-      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><button class="tiny" id="month_prev" title="Mes anterior">‹</button><select id="month_sel">${opcionesMes()}</select><button class="tiny" id="month_next" title="Mes siguiente">›</button></div>` : ""}
+      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><input type="month" id="month_sel" value="${selectedMonth}"></div>` : ""}
       <span class="sesion"><span class="hint" title="Sesión iniciada">${escH(authEmail)}${etiquetaRoles() ? " · "+escH(etiquetaRoles()) : ""}</span><button class="tiny" id="btn_logout">Cerrar sesión</button></span>
     </div>
     ${ro ? `<div class="ronote">Solo consulta: tu usuario puede ver esta página pero no modificarla.</div><div class="ro">` : ""}
@@ -1068,7 +1053,7 @@ function showMsg(text, type){
 function wireEvents(){
   document.querySelectorAll(".tab[data-tab], .menu-item[data-tab]").forEach(t=>{
     // Al cambiar de pestaña se limpia el último mensaje para que no aparezca fuera de contexto
-    t.onclick = ()=>{ view = t.dataset.tab; menuOpen = false; pendingConfirm = null; formMsg = ""; usrEdit = null; render(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); };
+    t.onclick = ()=>{ view = t.dataset.tab; menuOpen = false; pendingConfirm = null; formMsg = ""; usrEdit = null; costosBorrador = {}; render(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); };
   });
   const btnMenu = document.getElementById("btn_menu");
   if(btnMenu) btnMenu.onclick = (e)=>{ e.stopPropagation(); menuOpen = !menuOpen; render(); };
@@ -1087,18 +1072,17 @@ function wireEvents(){
   const lnkReset = document.getElementById("lnk_reset"); if(lnkReset) lnkReset.onclick = ()=>{ loginMode = "reset"; loginMsg = ""; render(); };
   const lnkBack = document.getElementById("lnk_back"); if(lnkBack) lnkBack.onclick = ()=>{ loginMode = "login"; loginMsg = ""; render(); };
   const monthSel = document.getElementById("month_sel");
-  const cambiarMes = ym=>{
-    if(!/^\d{4}-\d{2}$/.test(ym)) return;
-    selectedMonth = ym;
+  if(monthSel) monthSel.onchange = (e)=>{
+    if(!/^\d{4}-\d{2}$/.test(e.target.value)) return;   // el campo se vació: se ignora
+    selectedMonth = e.target.value;
     localStorage.setItem("ivan_sel_month", selectedMonth);
     subscribeMine(); if(puede("registros.todos")) subscribeAll(); render();
   };
-  if(monthSel) monthSel.onchange = (e)=> cambiarMes(e.target.value);
-  const monthPrev = document.getElementById("month_prev"); if(monthPrev) monthPrev.onclick = ()=> cambiarMes(sumarMes(selectedMonth, -1));
+  // Costos: lo escrito sin guardar se recuerda aunque la página se vuelva a dibujar
+  document.querySelectorAll(".costo_campo").forEach(el=>{ el.oninput = ()=>{ costosBorrador[el.id] = el.value; }; });
   // Usuarios y accesos: el campo del Equipo solo aparece al marcar el rol Ingeniero
   const rolIng = document.querySelector('.us_rol[value="ingeniero"]');
   if(rolIng) rolIng.onchange = ()=>{ const box = document.getElementById("us_eng_box"); if(box) box.style.display = rolIng.checked ? "block" : "none"; };
-  const monthNext = document.getElementById("month_next"); if(monthNext) monthNext.onclick = ()=> cambiarMes(sumarMes(selectedMonth, 1));
   const engSel = document.getElementById("eng_select");
   if(engSel) engSel.onchange = (e)=>{
     selectedEngineer = e.target.value;
@@ -1407,6 +1391,12 @@ async function doRenameEngineer(i){
     if(newId !== oldId){ await db.doc("config_engineers/"+oldId).delete(); }
     // La cuenta de acceso sigue ligada al ingeniero con su nombre nuevo
     for(const u of usuariosList.filter(u=>u.engineer===oldName)){ const { email:_e, ...datos } = u; await db.doc("usuarios/"+u.email).set({ ...datos, engineer:newName, ...(datos.nombre===oldName ? {nombre:newName} : {}), updatedAt:new Date().toISOString() }); }
+    // El salario está guardado con el nombre: se pasa al nombre nuevo
+    const salViejo = costosIng[slugify(oldName)];
+    if(salViejo && slugify(oldName) !== slugify(newName)){
+      await db.doc("costos/ing_"+slugify(newName)).set({ ...salViejo, engineer:newName, updatedAt:new Date().toISOString() });
+      await db.doc("costos/ing_"+slugify(oldName)).delete();
+    }
     if(selectedEngineer === oldName) selectedEngineer = newName;
     showMsg("Ingeniero renombrado y registros históricos actualizados.", "ok");
   }catch(err){
@@ -1908,7 +1898,7 @@ function renderInfRentab(){
 // Costo de la hora = salario mensual × factor prestacional ÷ horas laborales del mes.
 // Horas normales y extra compensadas con tiempo: a costo de la hora. Extra de domingo/festivo pagada en dinero:
 // costo de la hora + recargo. Bono de campo: valor por día en campo, repartido entre los proyectos de ese día.
-const COSTOS_DEFAULT = { factor:1.52, horasMes:182, recargoDominical:115, valorBono:0 };
+const COSTOS_DEFAULT = { factor:1.4963, horasMes:182, recargoDominical:115, valorBono:0 };
 const CATEGORIAS_GASTO = ["Viáticos","Transporte","Hospedaje","Alimentación","Materiales y equipos","Subcontratos","Otros"];
 function fmtCOP(v){ return (Number(v)||0).toLocaleString("es-CO", { style:"currency", currency:"COP", maximumFractionDigits:0 }); }
 function costosParams(){ return { ...COSTOS_DEFAULT, ...(costosCfg||{}) }; }
@@ -2167,23 +2157,26 @@ async function saveRentab(projId){
 
 // Página ☰ → Costos (admin): parámetros y salario de cada ingeniero.
 function renderCostos(){
+  if(!costosCargado) return `<div class="card"><div class="hint">Cargando costos guardados…</div></div>`;
   const cfg = costosParams();
+  // Si hay algo escrito sin guardar, se muestra eso (la página se vuelve a dibujar cuando llegan datos nuevos).
+  const bor = (id, v)=> id in costosBorrador ? costosBorrador[id] : v;
   const filas = engineerNames().map(n=>{
     const s = salarioDe(n), ch = costoHora(n);
     return `<tr><td data-label="Ingeniero"><b>${escH(n)}</b></td>
-      <td data-label="Salario mensual"><input type="number" class="sal_input" data-eng="${escH(n)}" min="0" step="1000" value="${s!=null?s:""}" placeholder="Ej: 6500000" style="max-width:180px"></td>
+      <td data-label="Salario mensual"><input type="number" class="sal_input costo_campo" id="sal_${escH(slugify(n))}" data-eng="${escH(n)}" min="0" step="1000" value="${escH(bor("sal_"+slugify(n), s!=null?String(s):""))}" placeholder="Ej: 6500000" style="max-width:180px"></td>
       <td data-label="Costo por hora">${ch!=null ? fmtCOP(ch) : `<span class="hint">—</span>`}</td></tr>`;
   }).join("");
   return `<div class="card">
-    <div class="admin-note">Valores para calcular el costo real de los proyectos. Solo los ven los administradores. <b>Costo de la hora = salario × factor prestacional ÷ horas laborales del mes.</b> Confirma los valores con contabilidad y nómina.</div>
+    <div class="admin-note">Valores para calcular el costo real de los proyectos. Solo los ven administradores, contabilidad y gerencia. <b>Costo de la hora = salario × factor prestacional ÷ horas laborales del mes.</b> Confirma los valores con contabilidad y nómina.</div>
     <h4 class="cbh" style="margin-top:0">Parámetros</h4>
     <div class="row2">
-      <div><label>Factor prestacional</label><input type="number" id="cf_factor" step="0.01" min="1" value="${cfg.factor}"><div class="hint">Salario + prestaciones, seguridad social y parafiscales. Ej: 1.52</div></div>
-      <div><label>Horas laborales al mes</label><input type="number" id="cf_horas" step="1" min="1" value="${cfg.horasMes}"><div class="hint">42 h/semana × 52 ÷ 12 = 182 (jornada desde el 15-jul-2026)</div></div>
+      <div><label>Factor prestacional</label><input type="number" id="cf_factor" class="costo_campo" step="0.0001" min="1" value="${escH(bor("cf_factor", String(cfg.factor)))}"><div class="hint">1 + % prestacional ÷ 100. Process Solutions: 49,63 % → 1.4963 (dato de la gerencia administrativa)</div></div>
+      <div><label>Horas laborales al mes</label><input type="number" id="cf_horas" class="costo_campo" step="1" min="1" value="${escH(bor("cf_horas", String(cfg.horasMes)))}"><div class="hint">42 h/semana × 52 ÷ 12 = 182 (jornada desde el 15-jul-2026)</div></div>
     </div>
     <div class="row2">
-      <div><label>Recargo hora extra dominical/festiva pagada (%)</label><input type="number" id="cf_recargo" step="1" min="0" value="${cfg.recargoDominical}"><div class="hint">25 % de extra + 90 % dominical desde el 1-jul-2026 = 115 %</div></div>
-      <div><label>Valor del bono de campo por día (COP)</label><input type="number" id="cf_bono" step="1000" min="0" value="${cfg.valorBono||""}" placeholder="Ej: 120000"></div>
+      <div><label>Recargo hora extra dominical/festiva pagada (%)</label><input type="number" id="cf_recargo" class="costo_campo" step="1" min="0" value="${escH(bor("cf_recargo", String(cfg.recargoDominical)))}"><div class="hint">25 % de extra + 90 % dominical desde el 1-jul-2026 = 115 %</div></div>
+      <div><label>Valor del bono de campo por día (COP)</label><input type="number" id="cf_bono" class="costo_campo" step="1000" min="0" value="${escH(bor("cf_bono", cfg.valorBono ? String(cfg.valorBono) : ""))}" placeholder="Ej: 120000"></div>
     </div>
     <h4 class="cbh">Salario mensual por ingeniero</h4>
     ${filas ? cbTable(["Ingeniero","Salario mensual (COP)","Costo por hora"], filas) : `<div class="empty">Sin ingenieros configurados.</div>`}
@@ -2192,6 +2185,7 @@ function renderCostos(){
   </div>`;
 }
 async function saveCostos(){
+  if(!costosCargado){ showMsg("Espera a que carguen los costos guardados antes de guardar.", "bad"); return; }
   const num = id=>{ const el = document.getElementById(id); return el && el.value.trim()!=="" ? Number(el.value) : null; };
   const cfg = { factor:num("cf_factor"), horasMes:num("cf_horas"), recargoDominical:num("cf_recargo"), valorBono:num("cf_bono") ?? 0 };
   if(!(cfg.factor >= 1)){ showMsg("El factor prestacional debe ser 1 o mayor.", "bad"); return; }
@@ -2199,9 +2193,12 @@ async function saveCostos(){
   if(cfg.recargoDominical==null || cfg.recargoDominical < 0 || cfg.valorBono < 0){ showMsg("Revisa el recargo y el valor del bono.", "bad"); return; }
   const sal = [...document.querySelectorAll(".sal_input")].map(el=>({ eng:el.dataset.eng, v: el.value.trim()==="" ? null : Number(el.value) }));
   if(sal.some(x=>x.v!=null && (isNaN(x.v) || x.v < 0))){ showMsg("Revisa los salarios: deben ser números positivos.", "bad"); return; }
+  // Solo se escriben los salarios que cambiaron: así nunca se borra uno que no se tocó.
+  const cambiados = sal.filter(x=>{ const prev = (costosIng[slugify(x.eng)]||{}).salario; return (prev==null ? null : Number(prev)) !== x.v; });
   try{
     await db.doc("costos/config").set({ ...cfg, updatedAt:new Date().toISOString() });
-    await Promise.all(sal.map(x=>db.doc("costos/ing_"+slugify(x.eng)).set({ engineer:x.eng, salario:x.v, updatedAt:new Date().toISOString() })));
+    await Promise.all(cambiados.map(x=>db.doc("costos/ing_"+slugify(x.eng)).set({ engineer:x.eng, salario:x.v, updatedAt:new Date().toISOString() })));
+    costosBorrador = {};
     showMsg("Costos guardados.", "ok");
   }catch(err){ showMsg("No se pudieron guardar (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
 }
@@ -2804,7 +2801,7 @@ function stopCompData(){
   compUnsubs.forEach(u=>{ try{ u && u(); }catch(e){} });
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
-  costosCfg = null; costosIng = {}; gastos = []; finanzas = {};
+  costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; costosCargado = false; costosBorrador = {};
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real lo que necesitan Compensatorios, Bonos, Costos, gastos y rentabilidad,
@@ -2831,7 +2828,7 @@ function subscribeCompData(){
     .onSnapshot(snap=>{ campoPagos = toMap(snap); rr(); }, err=>showGlobalError("Pagos de bono de campo (revisa las reglas de Firestore)", err)));
   // Costos (Fase 2): parámetros y salarios, y gastos de los proyectos.
   if(verCostos) compUnsubs.push(db.collection("costos").limit(500)
-    .onSnapshot(snap=>{ const m = {}; let cfg = null; snap.docs.forEach(d=>{ if(d.id==="config") cfg = d.data(); else if(d.id.startsWith("ing_")) m[d.id.slice(4)] = d.data(); }); costosCfg = cfg; costosIng = m; rrCostos(); },
+    .onSnapshot(snap=>{ const m = {}; let cfg = null; snap.docs.forEach(d=>{ if(d.id==="config") cfg = d.data(); else if(d.id.startsWith("ing_")) m[d.id.slice(4)] = d.data(); }); costosCfg = cfg; costosIng = m; costosCargado = true; rrCostos(); },
       err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
   if(puede("gastos.ver")) compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
     .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); rrCostos(); },
