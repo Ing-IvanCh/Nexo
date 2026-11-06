@@ -349,6 +349,16 @@ tr.prow.psel td{background:var(--accent)}
 .palert a{color:var(--primary);cursor:pointer;font-weight:600;text-decoration:underline}
 .ordenform{background:var(--fill);border-radius:var(--radius-md);padding:12px;margin-top:10px}
 .orden_estado{padding:6px 8px;font-size:13px}
+/* Informes y consumo de horas: botones de descarga, barra de consumo del proyecto */
+.infgrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:8px}
+.infgrid button{width:100%}
+.pcons{background:var(--fill);border-radius:var(--radius-md);padding:12px;margin-bottom:10px}
+.pcons-top{display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:13.5px;margin-bottom:8px}
+.pbar{height:10px;border-radius:var(--radius-pill);background:var(--border);overflow:hidden;margin-bottom:6px}
+.pbar-in{height:100%;border-radius:var(--radius-pill)}
+.pbar-in.ok{background:var(--ok)}
+.pbar-in.warn{background:var(--warn)}
+.pbar-in.bad{background:var(--bad)}
 @media(max-width:560px){.tabs{border-radius:var(--radius-lg)}}
 
 /* ---- Tabla responsiva: en pantallas angostas se convierte en tarjetas apiladas, sin deslizar ---- */
@@ -396,7 +406,7 @@ tr.prow.psel td{background:var(--accent)}
 //   8. Proyectos ................. registro de proyectos/servicios, órdenes de contratos y horas por proyecto
 //   9. Compensatorios y Bonos .... cálculo de saldos, pagos e informe Word propio
 //  10. Suscripciones ............. lecturas en tiempo real de Firebase (onSnapshot)
-//  11. Informes .................. CSV y Word del mes (con gráficas y membrete)
+//  11. Informes .................. pestaña Informes (indicadores y descargas), CSV y Word del mes
 //  12. Acceso admin e inicio ..... login de administrador e init()
 // Colecciones de Firebase que usa: activities, config, config_engineers, config_projects,
 // comp_ajustes, campo_pagos, comp_saldos (estas tres últimas solo para administradores).
@@ -602,12 +612,13 @@ function render(){
       ${isOwner ? `<div class="tab ${view==='proyectos'?'active':''}" data-tab="proyectos">Proyectos</div>` : ""}
       ${isOwner ? `<div class="tab ${view==='compensatorios'?'active':''}" data-tab="compensatorios">Compensatorios</div>` : ""}
       ${isOwner ? `<div class="tab ${view==='bonos'?'active':''}" data-tab="bonos">Bonos de campo</div>` : ""}
+      ${isOwner ? `<div class="tab ${view==='informes'?'active':''}" data-tab="informes">Informes</div>` : ""}
     </div>
     <div class="toolbar">
-      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos') ? `<div class="monthbox"><label style="margin:0">Mes:</label><input type="month" id="month_sel" value="${selectedMonth}"></div>` : ""}
+      ${(view==='form'||view==='resumen'||view==='compensatorios'||view==='bonos'||view==='informes') ? `<div class="monthbox"><label style="margin:0">Mes:</label><input type="month" id="month_sel" value="${selectedMonth}"></div>` : ""}
       <button class="tiny" id="btn_admin_toggle" style="margin-left:auto">${isOwner ? "🔓 Cerrar admin" : "🔒 Admin"}</button>
     </div>
-    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : renderProyectos()}
+    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : renderProyectos()}
     ${adminLoginOpen ? `
     <div class="modal-backdrop" id="admin_modal_backdrop">
       <div class="modal-card card">
@@ -823,10 +834,6 @@ function renderResumen(){
     </div>`;
   }).join("");
   return `
-  <div class="dl-row">
-    <button class="secondary" id="btn_download_word">📄 Descargar informe del mes (Word)</button>
-    <button class="secondary" id="btn_download_csv">⬇ CSV (datos crudos)</button>
-  </div>
   <div class="card">${cards || '<div class="empty">Sin ingenieros configurados.</div>'}</div>
   <div class="msg ${formMsgType}" id="msgbox2" style="margin-top:-6px">${formMsg}</div>`;
 }
@@ -881,7 +888,8 @@ function showMsg(text, type){
 // Los botones con atributo data-act se envían todos a handleAction().
 function wireEvents(){
   document.querySelectorAll(".tab").forEach(t=>{
-    t.onclick = ()=>{ view = t.dataset.tab; pendingConfirm = null; render(); };
+    // Al cambiar de pestaña se limpia el último mensaje para que no aparezca fuera de contexto
+    t.onclick = ()=>{ view = t.dataset.tab; pendingConfirm = null; formMsg = ""; render(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); };
   });
   const btnDismissError = document.getElementById("btn_dismiss_error");
   if(btnDismissError) btnDismissError.onclick = ()=>{ globalError = ""; render(); };
@@ -1071,6 +1079,8 @@ async function handleAction(act, ds){
     const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"});
     return;
   }
+  if(act === "inf-consumo"){ await loadConsumoProyectos(true); return; }
+  if(act === "inf-proj"){ view = "proyectos"; projSel = ds.id; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const pr = projectsList.find(x=>x.id===ds.id); if(pr && !projHoras[pr.id]) loadProjHoras(pr); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-new"){ projSel = "__new__"; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-close"){ projSel = ""; editingOrden = null; pendingConfirm = null; render(); return; }
   if(act === "proj-save"){ await saveProject(); return; }
@@ -1309,6 +1319,7 @@ function renderProyectos(){
       <td data-label="Cliente">${escH(p.cliente||"—")}</td>
       <td data-label="Nombre">${escH(p.nombre||"—")}${oa?`<div class="hint" style="color:var(--primary)">${oa} orden(es) abierta(s)</div>`:""}${vence!=null && vence<=DIAS_AVISO_VENCIMIENTO?`<div class="hint" style="color:var(--bad)">${vence<0?"Venció":"Vence en "+vence+" días"}</div>`:""}</td>
       <td data-label="Estado"><span class="badge ${ESTADO_PROY_BADGE[est]||"b-curso"}">${escH(est)}</span></td>
+      <td data-label="Consumo">${presupuestoHoras(p) ? consumoBadge(p) : "—"}</td>
       <td data-label="OC / OS">${escH(docLabel(p))}</td>
       <td data-label="Año">${p.anio||"—"}</td>
     </tr>`;
@@ -1323,6 +1334,8 @@ function renderProyectos(){
   // Avisos: contratos por vencer, pendientes de pago y órdenes abiertas.
   const alertas = [];
   if(vencen.length) alertas.push(`<div class="palert bad"><b>Contratos por vencer:</b> ${vencen.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${diasHasta(p.fechaFin)<0?"vencido":diasHasta(p.fechaFin)+" días"})`).join(" · ")}</div>`);
+  const sobre = projectsList.filter(p=>{ const c = consumoDe(p); return c && (c.nivel==="bad" || c.nivel==="warn"); });
+  if(sobre.length) alertas.push(`<div class="palert ${sobre.some(p=>consumoDe(p).nivel==="bad")?"bad":"warn"}"><b>Consumo de horas:</b> ${sobre.map(p=>{ const c = consumoDe(p); return `<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${Math.round(c.pct)} %)`; }).join(" · ")}</div>`);
   if(pendPago.length) alertas.push(`<div class="palert warn"><b>Pendientes de pago:</b> ${pendPago.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a>`).join(" · ")}</div>`);
   if(nOrdAb) alertas.push(`<div class="palert info"><b>${nOrdAb} orden(es) abierta(s)</b> en contratos vigentes.</div>`);
 
@@ -1338,7 +1351,7 @@ function renderProyectos(){
       <button class="primary" data-act="proj-new" style="margin-top:0;width:auto">+ Nuevo proyecto</button>
     </div>
     <div class="hint" id="proj_count" style="margin-bottom:6px">${list.length} proyecto(s)</div>
-    ${rows ? cbTable(["Código","Cliente","Nombre","Estado","OC / OS","Año"], rows) : `<div class="empty">No hay proyectos con este filtro.</div>`}
+    ${rows ? cbTable(["Código","Cliente","Nombre","Estado","Consumo","OC / OS","Año"], rows) : `<div class="empty">No hay proyectos con este filtro.</div>`}
     <div class="msg ${formMsg?formMsgType:""}" id="msgbox3" style="margin-top:10px">${formMsg}</div>
   </div>`;
 }
@@ -1368,6 +1381,11 @@ function renderProjDetalle(){
       <div><label>Documento</label><select id="pf_doctipo"><option value="">—</option>${selOpts(DOC_TIPOS, p.docTipo)}</select></div>
       <div><label>Número de OC / OS / contrato</label><input id="pf_documento" value="${escH(p.documento||"")}" placeholder="Ej: OC 110042502"></div>
     </div>
+    <div class="row2">
+      <div><label>Presupuesto de la oferta</label><input type="number" id="pf_pres" min="0" step="any" value="${p.presupuestoValor!=null?p.presupuestoValor:""}" placeholder="Ej: 120"></div>
+      <div><label>Unidad</label><select id="pf_pres_u"><option value="h" ${p.presupuestoUnidad!=="d"?"selected":""}>Horas</option><option value="d" ${p.presupuestoUnidad==="d"?"selected":""}>Días (× ${MAX_HORAS} h)</option></select></div>
+    </div>
+    ${estadoProy(p)==="Contrato vigente" ? `<div class="hint">En contratos vigentes el presupuesto es la suma de los días de sus órdenes; este valor solo se usa si el contrato no tiene órdenes.</div>` : ""}
     <label>Estado</label>
     <select id="pf_estado">${ESTADOS_PROY.map(e=>`<option value="${escH(e)}" ${e===est?"selected":""}>${escH(e)} — ${escH(ESTADOS_PROY_DESC[e])}</option>`).join("")}</select>
     <div class="row2">
@@ -1456,12 +1474,13 @@ function renderProjHoras(p){
       <td data-label="Desde">${r.desde}</td><td data-label="Hasta">${r.hasta}</td></tr>`).join("")
       + `<tr><td data-label="Total"><b>Total</b></td><td data-label="Horas"><b>${fmtN(h.total)} h</b></td><td data-label="Extra">${h.extra?fmtN(h.extra)+" h":"—"}</td><td data-label="Registros">${h.n}</td><td data-label=""></td><td data-label=""></td></tr>`);
   return `<h4 class="cbh" style="display:flex;justify-content:space-between;align-items:center;gap:8px">Horas registradas por los ingenieros <button class="tiny" data-act="proj-horas" data-id="${escH(p.id)}">Actualizar</button></h4>
+    ${consumoBarra(p)}
     ${p.duplicado ? `<div class="hint" style="margin-bottom:6px">Código repetido: las horas registradas con el ${escH(p.codigo)} se muestran en ambos proyectos.</div>` : ""}
     ${inner}`;
 }
 
 // Busca en 'activities' las horas cargadas al proyecto (por su código) y las agrupa por ingeniero.
-async function loadProjHoras(p){
+async function loadProjHoras(p, silent){
   const cod = String(p.codigo||"").trim();
   if(!db || !cod) return;
   projHoras[p.id] = { loading:true };
@@ -1487,7 +1506,144 @@ async function loadProjHoras(p){
   }catch(err){
     projHoras[p.id] = { error: err.message||err.code };
   }
-  if(view==="proyectos" && projSel===p.id) render();
+  if(!silent && view==="proyectos" && projSel===p.id) render();
+}
+
+// ---------- Fase 1 de indicadores: presupuesto de horas, consumo y utilización ----------
+// % de consumo a partir del cual el proyecto pasa a amarillo; por encima de 100 % pasa a rojo.
+const PRES_ALERTA_PCT = 80;
+// Presupuesto de horas del proyecto. En contratos vigentes es la suma de sus órdenes (días × 8.5 h, sin las canceladas);
+// en lo demás, lo que viene en la oferta, escrito en horas o en días.
+function presupuestoHoras(p){
+  if(estadoProy(p)==="Contrato vigente"){
+    const h = (p.ordenes||[]).filter(o=>o.estado!=="Cancelada").reduce((a,o)=>a+(Number(o.dias)||0)*MAX_HORAS, 0);
+    if(h > 0) return { horas:h, fuente:"órdenes" };
+  }
+  const v = Number(p.presupuestoValor)||0;
+  if(v > 0) return { horas: p.presupuestoUnidad==="d" ? v*MAX_HORAS : v, fuente:"oferta" };
+  return null;
+}
+// Consumo de horas contra presupuesto: null si no tiene presupuesto; {cargando} mientras llegan las horas.
+function consumoDe(p){
+  const pres = presupuestoHoras(p);
+  if(!pres) return null;
+  const h = projHoras[p.id];
+  if(!h || h.loading) return { pres, cargando:true };
+  if(h.error) return { pres, error:h.error };
+  const pct = pres.horas > 0 ? h.total / pres.horas * 100 : 0;
+  return { pres, horas:h.total, pct, disponible: pres.horas - h.total,
+    nivel: pct > 100 ? "bad" : pct >= PRES_ALERTA_PCT ? "warn" : "ok" };
+}
+const NIVEL_TXT = { ok:"En presupuesto", warn:"Cerca del límite", bad:"Sobre presupuesto" };
+const NIVEL_BADGE = { ok:"b-comp", warn:"b-pend", bad:"b-bloq" };
+// Etiqueta corta del consumo para las tablas: "62 % · 74 / 120 h".
+function consumoBadge(p){
+  const c = consumoDe(p);
+  if(!c) return `<span class="hint">Sin presupuesto</span>`;
+  if(c.cargando) return `<span class="hint">Calculando…</span>`;
+  if(c.error) return `<span class="hint">Sin datos</span>`;
+  return `<span class="badge ${NIVEL_BADGE[c.nivel]}">${Math.round(c.pct)} %</span> <span class="hint">${fmtN(c.horas)} / ${fmtN(c.pres.horas)} h</span>`;
+}
+// Barra de consumo para el detalle del proyecto.
+function consumoBarra(p){
+  const c = consumoDe(p);
+  if(!c) return `<div class="hint" style="margin-bottom:8px">Sin presupuesto de horas: escríbelo en el formulario para ver el consumo.</div>`;
+  if(c.cargando || c.error) return "";
+  const ancho = Math.min(100, c.pct);
+  return `<div class="pcons">
+      <div class="pcons-top"><b>Consumo: ${fmtN(c.horas)} de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)} %)</b><span class="badge ${NIVEL_BADGE[c.nivel]}">${NIVEL_TXT[c.nivel]}</span></div>
+      <div class="pbar"><div class="pbar-in ${c.nivel}" style="width:${ancho}%"></div></div>
+      <div class="hint">${c.disponible >= 0 ? `Quedan ${fmtN(c.disponible)} h (${fmtN(c.disponible/MAX_HORAS)} días)` : `Se pasó por ${fmtN(-c.disponible)} h (${fmtN(-c.disponible/MAX_HORAS)} días)`} · Presupuesto ${c.pres.fuente==="órdenes" ? "= suma de las órdenes del contrato" : "de la oferta"}</div>
+    </div>`;
+}
+// Carga las horas acumuladas de todos los proyectos con presupuesto (las que falten, o todas si force).
+// Devuelve una promesa para que los informes puedan esperar a tener los datos.
+let consumoPromise = null;
+function loadConsumoProyectos(force){
+  if(!db) return Promise.resolve();
+  if(consumoPromise) return consumoPromise;
+  const lista = projectsList.filter(p=>presupuestoHoras(p) && (force || !projHoras[p.id] || projHoras[p.id].error));
+  if(!lista.length) return Promise.resolve();
+  consumoPromise = Promise.all(lista.map(p=>loadProjHoras(p, true))).then(()=>{
+    consumoPromise = null;
+    if(view==="proyectos" || view==="informes") render();
+  });
+  return consumoPromise;
+}
+// Utilización del mes: horas en Proyectos y Servicios (se cobran al cliente) ÷ horas trabajadas.
+// Capacitación y apoyo interno cuentan como horas no facturables. No incluye ausencias.
+function utilizacionMes(r){
+  const filas = r.porEng.map(e=>{
+    const x = r.horasEngCat[e.name] || { total:0 };
+    const fact = (x["Proyecto"]||0) + (x["Servicio"]||0);
+    return { name:e.name, fact, noFact: x.total - fact, total: x.total, pct: x.total > 0 ? fact / x.total * 100 : null };
+  });
+  const fact = filas.reduce((a,f)=>a+f.fact, 0), total = filas.reduce((a,f)=>a+f.total, 0);
+  return { filas, fact, noFact: total - fact, total, pct: total > 0 ? fact / total * 100 : null };
+}
+// Proyectos con presupuesto, ordenados del más consumido al menos consumido.
+function proyectosConConsumo(){
+  return projectsList.filter(p=>presupuestoHoras(p)).map(p=>({ p, c:consumoDe(p) }))
+    .sort((a,b)=> ((b.c&&b.c.pct)||0) - ((a.c&&a.c.pct)||0));
+}
+
+// Pestaña 'Informes' (admin): indicadores del mes, consumo de horas por proyecto y todas las descargas.
+function renderInformes(){
+  const r = buildReportData();
+  const u = utilizacionMes(r);
+  const pct = v => v==null ? "—" : Math.round(v)+" %";
+  const utilRows = u.filas.map(f=>`<tr>
+      <td data-label="Ingeniero"><b>${escH(f.name)}</b></td>
+      <td data-label="Facturables">${fmtN(f.fact)} h</td>
+      <td data-label="No facturables">${fmtN(f.noFact)} h</td>
+      <td data-label="Total">${fmtN(f.total)} h</td>
+      <td data-label="Utilización"><b>${pct(f.pct)}</b></td></tr>`).join("");
+  const lista = proyectosConConsumo();
+  const sinPres = projectsList.filter(p=>proyActivo(p) && !presupuestoHoras(p));
+  const consRows = lista.map(({p,c})=>`<tr class="prow" data-act="inf-proj" data-id="${escH(p.id)}">
+      <td data-label="Proyecto"><b>${escH(p.codigo)}</b> ${escH(p.nombre||"")}</td>
+      <td data-label="Estado"><span class="badge ${ESTADO_PROY_BADGE[estadoProy(p)]||"b-curso"}">${escH(estadoProy(p))}</span></td>
+      <td data-label="Presupuesto">${fmtN(c.pres.horas)} h${c.pres.fuente==="órdenes"?' <span class="hint">(órdenes)</span>':""}</td>
+      <td data-label="Consumido">${c.cargando||c.error ? "…" : fmtN(c.horas)+" h"}</td>
+      <td data-label="Disponible">${c.cargando||c.error ? "…" : fmtN(c.disponible)+" h"}</td>
+      <td data-label="Consumo">${consumoBadge(p)}</td></tr>`).join("");
+  const nBad = lista.filter(x=>x.c && x.c.nivel==="bad").length, nWarn = lista.filter(x=>x.c && x.c.nivel==="warn").length;
+  return `
+  <div class="card">
+    <div class="admin-note">Informes e indicadores del mes seleccionado arriba (<b>${monthLabel(selectedMonth)}</b>). El consumo de horas por proyecto es acumulado desde que inició cada proyecto.</div>
+    <h4 class="cbh" style="margin-top:0">Descargas</h4>
+    <div class="infgrid">
+      <button class="secondary" id="btn_download_word">📄 Informe de horas del mes (Word)</button>
+      <button class="secondary" id="btn_download_csv">⬇ Datos del mes (CSV)</button>
+      <button class="secondary" id="btn_cb_word">📄 Informe de compensatorios y bonos (Word)</button>
+    </div>
+    <div class="msg ${formMsg?formMsgType:""}" id="msgbox4" style="margin-top:10px">${formMsg}</div>
+  </div>
+
+  <div class="card">
+    <h4 class="cbh" style="margin-top:0">Utilización del equipo · ${monthLabel(selectedMonth)}</h4>
+    <div class="kpis">
+      <div class="kpi"><div class="kpi-l">Utilización del área</div><div class="kpi-v">${pct(u.pct)}</div></div>
+      <div class="kpi"><div class="kpi-l">Horas facturables</div><div class="kpi-v">${fmtN(u.fact)} h</div></div>
+      <div class="kpi"><div class="kpi-l">Horas no facturables</div><div class="kpi-v">${fmtN(u.noFact)} h</div></div>
+      <div class="kpi"><div class="kpi-l">Horas trabajadas</div><div class="kpi-v">${fmtN(u.total)} h</div></div>
+    </div>
+    <div class="hint" style="margin-bottom:8px">Facturables = horas en Proyectos y Servicios. No facturables = capacitación y apoyo interno. No incluye ausencias.</div>
+    ${utilRows ? cbTable(["Ingeniero","Facturables","No facturables","Total","Utilización"], utilRows) : `<div class="empty">Sin ingenieros configurados.</div>`}
+  </div>
+
+  <div class="card">
+    <h4 class="cbh" style="margin-top:0;display:flex;justify-content:space-between;align-items:center;gap:8px">Consumo de horas contra presupuesto <button class="tiny" data-act="inf-consumo">Actualizar</button></h4>
+    ${lista.length ? `<div class="kpis">
+      <div class="kpi"><div class="kpi-l">Con presupuesto</div><div class="kpi-v">${lista.length}</div></div>
+      <div class="kpi"><div class="kpi-l">Cerca del límite (≥ ${PRES_ALERTA_PCT} %)</div><div class="kpi-v" style="color:var(--warn)">${nWarn}</div></div>
+      <div class="kpi"><div class="kpi-l">Sobre presupuesto</div><div class="kpi-v" style="color:var(--bad)">${nBad}</div></div>
+      <div class="kpi"><div class="kpi-l">Activos sin presupuesto</div><div class="kpi-v">${sinPres.length}</div></div>
+    </div>` : ""}
+    ${consRows ? cbTable(["Proyecto","Estado","Presupuesto","Consumido","Disponible","Consumo"], consRows)
+      : `<div class="empty">Ningún proyecto tiene presupuesto todavía. Escríbelo en la pestaña Proyectos (dato de la transferencia de oferta).</div>`}
+    ${sinPres.length && lista.length ? `<div class="hint" style="margin-top:8px">Proyectos activos sin presupuesto: ${sinPres.map(p=>escH(p.codigo)).join(", ")}.</div>` : ""}
+  </div>`;
 }
 
 // Lee los campos del formulario del proyecto.
@@ -1495,13 +1651,15 @@ function leerProjForm(){
   const v = id=>{ const el=document.getElementById(id); return el ? el.value.trim() : ""; };
   return { tipo:v("pf_tipo"), codigo:v("pf_codigo"), cliente:v("pf_cliente"), anio: v("pf_anio") ? Number(v("pf_anio")) : null,
     nombre:v("pf_nombre"), objeto:v("pf_objeto"), docTipo:v("pf_doctipo"), documento:v("pf_documento"),
-    estado:v("pf_estado"), fechaInicio:v("pf_inicio"), fechaFin:v("pf_fin"), notas:v("pf_notas") };
+    estado:v("pf_estado"), fechaInicio:v("pf_inicio"), fechaFin:v("pf_fin"), notas:v("pf_notas"),
+    presupuestoValor: v("pf_pres") ? Number(v("pf_pres")) : null, presupuestoUnidad: v("pf_pres_u") || "h" };
 }
 // Crea un proyecto nuevo o guarda los cambios de uno existente en config_projects.
 async function saveProject(){
   const isNew = projSel==="__new__";
   const f = leerProjForm();
   if(!f.nombre){ showMsg("Escribe el nombre corto del proyecto.", "bad"); return; }
+  if(f.presupuestoValor!=null && (isNaN(f.presupuestoValor) || f.presupuestoValor < 0)){ showMsg("El presupuesto debe ser un número positivo.", "bad"); return; }
   if(f.fechaInicio && f.fechaFin && f.fechaFin < f.fechaInicio){ showMsg("La fecha de fin no puede ser antes de la de inicio.", "bad"); return; }
   try{
     if(isNew){
@@ -1700,13 +1858,10 @@ function cbFold(key, title, inner){
 function cbTable(headers, rows){
   return `<div class="scroll-x"><table><thead><tr>${headers.map(h=>`<th>${h}</th>`).join("")}</tr></thead><tbody>${rows}</tbody></table></div>`;
 }
-// Encabezado común de Compensatorios y Bonos: botón del informe y aviso del mes de pago.
+// Encabezado común de Compensatorios y Bonos: aviso del mes de pago (el informe se descarga en la pestaña Informes).
 function cbTop(){
   const antesDeCorte = selectedMonth < SALDO_CORTE.slice(0,7);
-  return `<div class="dl-row">
-      <button class="secondary" id="btn_cb_word">📄 Informe de compensatorios y bonos (${monthLabel(selectedMonth)})</button>
-    </div>
-    ${antesDeCorte ? `<div class="msg bad" style="display:block">El control empieza el ${SALDO_CORTE}. Elige octubre 2026 o un mes posterior arriba.</div>` : ""}
+  return `${antesDeCorte ? `<div class="msg bad" style="display:block">El control empieza el ${SALDO_CORTE}. Elige octubre 2026 o un mes posterior arriba.</div>` : ""}
     <div class="hint" style="margin:-4px 0 12px">Lo que marques como pagado queda registrado en el mes seleccionado arriba: <b>${monthLabel(selectedMonth)}</b>.</div>`;
 }
 // Texto que explica de dónde viene el saldo histórico del ingeniero.
@@ -2168,7 +2323,8 @@ function subscribeProjects(){
   if(!db) return;
   unsubProj = db.collection("config_projects").orderBy("codigo").onSnapshot(snap=>{
     projectsList = snap.docs.map(d=>({ id:d.id, ...d.data() }));
-    if(view==="form" || view==="proyectos") render();
+    if(view==="form" || view==="proyectos" || view==="informes") render();
+    if(isOwner && (view==="proyectos" || view==="informes")) loadConsumoProyectos();
   }, err=>showGlobalError("Proyectos", err));
 }
 
@@ -2291,6 +2447,7 @@ function buildReportData(){
 // Descarga el CSV con los datos del mes.
 async function downloadCsvReport(){
   if(!downloadsCap){ showMsg("La descarga no está disponible en esta vista.", "bad"); return; }
+  await loadConsumoProyectos(); // horas acumuladas de los proyectos con presupuesto
   const r = buildReportData();
   const lines = [];
   lines.push(`Reporte de Actividades - ${monthLabel(selectedMonth)}`);
@@ -2323,6 +2480,18 @@ async function downloadCsvReport(){
   r.horasPorProyectoIng.forEach(p=>Object.entries(p.eng).sort((a,b)=>b[1].h-a[1].h).forEach(([ing,v])=>
     lines.push([p.categoria,p.codigo,p.nombre,ing,v.h.toFixed(1),v.extra.toFixed(1),p.total>0?Math.round(v.h/p.total*100)+"%":""].map(csvEsc).join(","))));
   lines.push("");
+  { const u = utilizacionMes(r);
+    lines.push("UTILIZACION DEL EQUIPO (facturables = Proyectos + Servicios)");
+    lines.push("Colaborador,Horas facturables,Horas no facturables,Horas trabajadas,Utilizacion %");
+    u.filas.concat([{ name:"Total del area", fact:u.fact, noFact:u.noFact, total:u.total, pct:u.pct }]).forEach(f=>
+      lines.push([f.name, f.fact.toFixed(1), f.noFact.toFixed(1), f.total.toFixed(1), f.pct==null?"":Math.round(f.pct)].map(csvEsc).join(",")));
+    lines.push("");
+    lines.push("CONSUMO DE HORAS CONTRA PRESUPUESTO (acumulado)");
+    lines.push("Codigo,Proyecto,Presupuesto h,Consumido h,Disponible h,% consumo,Estado");
+    proyectosConConsumo().filter(x=>x.c && !x.c.cargando && !x.c.error).forEach(({p,c})=>
+      lines.push([p.codigo, p.nombre||"", c.pres.horas.toFixed(1), c.horas.toFixed(1), c.disponible.toFixed(1), Math.round(c.pct), NIVEL_TXT[c.nivel]].map(csvEsc).join(",")));
+    lines.push("");
+  }
   lines.push("HORAS POR TIPO DE ACTIVIDAD");
   lines.push("Actividad,Horas,Registros");
   Object.keys(r.byAct).sort((a,b)=>r.byAct[b].h-r.byAct[a].h).forEach(k=>lines.push([k,r.byAct[k].h.toFixed(1),r.byAct[k].n].map(csvEsc).join(",")));
@@ -2457,6 +2626,7 @@ function wTable(headers, widths, rows){
 async function downloadWordReport(){
   if(!downloadsCap){ showMsg("La descarga no está disponible en esta vista.", "bad"); return; }
   if(typeof JSZip === "undefined"){ showMsg("No se pudo cargar el generador de Word. Intenta de nuevo.", "bad"); return; }
+  await loadConsumoProyectos(); // horas acumuladas de los proyectos con presupuesto
   const r = buildReportData();
   const pctEnProyectos = r.totalHoras>0 ? Math.round((r.horasEnProyectos/r.totalHoras)*100) : 0;
   const images = []; // {base64, xml}
@@ -2619,7 +2789,26 @@ async function downloadWordReport(){
         r.domingos.map(d=>[d.fecha, d.engineer, (d.tipoHora==="Extra"&&d.extraTipo)?`Extra · ${d.extraTipo}`:(d.tipoHora||"Normal"), (d.horas||0).toFixed(1)+" h", d.actividad||""]))
     : wp("No se registraron horas en domingo durante el periodo.", {italics:true,color:"6B7280"});
 
-  body += wHeading("9. Conclusiones y recomendaciones");
+  // 9. Indicadores de gestión: utilización del equipo y consumo de horas contra presupuesto
+  body += wHeading("9. Indicadores de gestión");
+  {
+    const u = utilizacionMes(r);
+    const pctTxt = v => v==null ? "—" : Math.round(v)+"%";
+    body += wp("9.1 Utilización del equipo", {bold:true, size:19, after:80, keepNext:true});
+    body += wp(`Porcentaje de las horas trabajadas que se dedicó a proyectos y servicios (horas facturables). Utilización del área en el periodo: ${pctTxt(u.pct)} (${u.fact.toFixed(1)} h facturables de ${u.total.toFixed(1)} h trabajadas).`, {size:19, keepNext:true});
+    body += wTable(["Colaborador","Horas facturables","Horas no facturables","Horas trabajadas","Utilización"], [2480,1900,1900,1900,1900],
+      u.filas.map(f=>[f.name, f.fact.toFixed(1)+" h", f.noFact.toFixed(1)+" h", f.total.toFixed(1)+" h", pctTxt(f.pct)])
+        .concat([["Total del área", u.fact.toFixed(1)+" h", u.noFact.toFixed(1)+" h", u.total.toFixed(1)+" h", pctTxt(u.pct)]]));
+    const lista = proyectosConConsumo().filter(x=>x.c && !x.c.cargando && !x.c.error);
+    body += wp("9.2 Consumo de horas contra presupuesto", {bold:true, size:19, after:80, keepNext:true});
+    body += wp(`Horas acumuladas desde el inicio de cada proyecto frente a las presupuestadas en la oferta (en contratos vigentes, la suma de sus órdenes). Alerta amarilla desde ${PRES_ALERTA_PCT}% y roja por encima de 100%. Datos al ${new Date().toLocaleDateString("es-CO",{day:"numeric",month:"long",year:"numeric"})}.`, {italics:true, color:"6B7280", size:18, keepNext:true});
+    body += lista.length
+      ? wTable(["Proyecto","Presupuesto","Consumido","Disponible","% consumo","Estado"], [3180,1300,1300,1300,1200,1800],
+          lista.map(({p,c})=>[`${p.codigo} - ${p.nombre||""}`, c.pres.horas.toFixed(1)+" h", c.horas.toFixed(1)+" h", c.disponible.toFixed(1)+" h", Math.round(c.pct)+"%", NIVEL_TXT[c.nivel]]))
+      : wp("Aún no hay proyectos con presupuesto de horas registrado.", {italics:true, color:"6B7280"});
+  }
+
+  body += wHeading("10. Conclusiones y recomendaciones");
   body += wBullet(r.proyectosActivos.length
     ? "Formalizar el seguimiento de los proyectos, servicios y capacitaciones activos, y mantener el registro diario para controlar el avance real frente al estimado."
     : "Dado que no hay proyectos activos, se recomienda formalizar la asignación de actividades de apoyo a otras áreas para los colaboradores con menor carga registrada.");
@@ -2726,7 +2915,7 @@ async function init(){
     isOwner = window.__firebaseAuth.isAdminNow();
     if(wasOwner !== isOwner){
       if(isOwner) subscribeCompData();
-      else { stopCompData(); if(view==="compensatorios" || view==="bonos") view = "form"; }
+      else { stopCompData(); if(view==="compensatorios" || view==="bonos" || view==="informes") view = "form"; }
       render();
     }
   });
