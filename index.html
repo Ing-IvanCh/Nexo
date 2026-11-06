@@ -1095,6 +1095,9 @@ function wireEvents(){
   };
   if(monthSel) monthSel.onchange = (e)=> cambiarMes(e.target.value);
   const monthPrev = document.getElementById("month_prev"); if(monthPrev) monthPrev.onclick = ()=> cambiarMes(sumarMes(selectedMonth, -1));
+  // Usuarios y accesos: el campo del Equipo solo aparece al marcar el rol Ingeniero
+  const rolIng = document.querySelector('.us_rol[value="ingeniero"]');
+  if(rolIng) rolIng.onchange = ()=>{ const box = document.getElementById("us_eng_box"); if(box) box.style.display = rolIng.checked ? "block" : "none"; };
   const monthNext = document.getElementById("month_next"); if(monthNext) monthNext.onclick = ()=> cambiarMes(sumarMes(selectedMonth, 1));
   const engSel = document.getElementById("eng_select");
   if(engSel) engSel.onchange = (e)=>{
@@ -3497,21 +3500,26 @@ function nombreUsuario(u){ return u.nombre || u.engineer || "—"; }
 function rolBadges(roles){ return roles.map(r=>`<span class="badge ${r==="admin"?"b-bloq":r==="ingeniero"?"b-curso":"b-comp"}">${escH(ROL_NOMBRE[r]||r)}</span>`).join(" "); }
 function renderUsuarios(){
   const lista = usuariosList.slice().sort((a,b)=>nombreUsuario(a).localeCompare(nombreUsuario(b), "es"));
-  const filas = [`<tr><td data-label="Nombre"><b>Propietario</b></td><td data-label="Correo">${escH(PROPIETARIO)}</td>
-      <td data-label="Roles">${rolBadges(["admin"])}</td><td data-label="Ingeniero">—</td><td data-label=""><span class="hint">Fijo, no se puede quitar</span></td></tr>`]
-    .concat(lista.map(u=>{
+  // Dos grupos: ingenieros de proyectos (rol Ingeniero, registran horas) y el resto de áreas.
+  const esIng = u=>rolesDeFicha(u).includes("ingeniero");
+  const ings = lista.filter(esIng), otros = lista.filter(u=>!esIng(u));
+  const fila = (u, conEquipo)=>{
       const roles = rolesDeFicha(u);
       const confirming = pendingConfirm && pendingConfirm.type==="removeUser" && pendingConfirm.key===u.email;
       return `<tr class="${usrEdit===u.email?"psel":""}"><td data-label="Nombre"><b>${escH(nombreUsuario(u))}</b></td>
         <td data-label="Correo">${escH(u.email)}</td>
         <td data-label="Roles">${roles.length ? rolBadges(roles) : `<span class="hint">Sin roles</span>`}</td>
-        <td data-label="Ingeniero">${roles.includes("ingeniero") && u.engineer ? escH(u.engineer) : "—"}</td>
+        ${conEquipo ? `<td data-label="Nombre en Equipo">${escH(u.engineer||"—")}</td>` : ""}
         <td data-label="">${confirming
           ? `<span class="confirmrow">¿Quitar el acceso de ${escH(u.email)}? <button class="tiny bad" data-act="confirm-usr-remove" data-email="${escH(u.email)}">Sí, quitar</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
           : `<button class="tiny" data-act="usr-edit" data-email="${escH(u.email)}">Editar</button>
              <button class="tiny" data-act="usr-resend" data-email="${escH(u.email)}">Reenviar correo</button>
              ${u.email===authEmail ? "" : `<button class="tiny bad" data-act="ask-usr-remove" data-email="${escH(u.email)}">Quitar acceso</button>`}`}</td></tr>`;
-    })).join("");
+  };
+  const filasOtros = [`<tr><td data-label="Nombre"><b>Propietario</b></td><td data-label="Correo">${escH(PROPIETARIO)}</td>
+      <td data-label="Roles">${rolBadges(["admin"])}</td><td data-label=""><span class="hint">Fijo, no se puede quitar</span></td></tr>`]
+    .concat(otros.map(u=>fila(u, false))).join("");
+  const filasIng = ings.map(u=>fila(u, true)).join("");
   const ayuda = ROLES.map(([k,n,d])=>`<div><b>${n}:</b> ${d}</div>`).join("");
   return `${usrEdit ? renderUsuarioForm() : ""}
   <div class="card">
@@ -3519,7 +3527,11 @@ function renderUsuarios(){
       <div class="rolhelp">${ayuda}</div></div>
     <div class="ptools"><div class="hint" style="margin:0;flex:1">${lista.length + 1} usuario(s)</div>
       <button class="primary" data-act="usr-new" style="margin-top:0;width:auto">+ Nuevo usuario</button></div>
-    ${cbTable(["Nombre","Correo","Roles","Ingeniero","" ], filas)}
+    <h4 class="cbh">Administración y otras áreas (${otros.length + 1})</h4>
+    ${cbTable(["Nombre","Correo","Roles",""], filasOtros)}
+    <h4 class="cbh">Ingenieros de proyectos (${ings.length})</h4>
+    <div class="hint" style="margin-bottom:6px">Tienen el rol Ingeniero: registran sus horas con su nombre del Equipo. También se pueden crear desde ☰ → Equipo.</div>
+    ${filasIng ? cbTable(["Nombre","Correo","Roles","Nombre en Equipo",""], filasIng) : `<div class="hint">Ningún ingeniero tiene cuenta todavía.</div>`}
     <div class="msg ${formMsg?formMsgType:""}" id="msgbox3" style="margin-top:10px">${formMsg}</div>
   </div>`;
 }
@@ -3540,8 +3552,11 @@ function renderUsuarioForm(){
     </div>
     <label>Roles</label>
     <div class="rolchecks">${ROLES.map(([k,n,d])=>`<label class="rolcheck"><input type="checkbox" class="us_rol" value="${k}" ${roles.includes(k)?"checked":""}> <span><b>${n}</b><span class="hint" style="display:block;margin:0">${d}</span></span></label>`).join("")}</div>
-    <label>Ingeniero del Equipo <span class="hint">(solo con el rol Ingeniero: es el nombre con el que registra sus horas)</span></label>
-    <select id="us_eng">${engOpts}</select>
+    <div id="us_eng_box" style="display:${roles.includes("ingeniero")?"block":"none"}">
+      <label>¿Quién es en el Equipo de proyectos?</label>
+      <div class="hint" style="margin:0 0 4px">Es el nombre con el que registra sus horas. Si no aparece, primero agrégalo en ☰ → Equipo.</div>
+      <select id="us_eng">${engOpts}</select>
+    </div>
     <button class="primary" data-act="usr-save">${isNew ? "Crear usuario y enviar correo" : "Guardar cambios"}</button>
   </div>`;
 }
