@@ -15,7 +15,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Registro Diario de Actividades</title>
-<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script type="module">
   // CONEXIÓN CON FIREBASE (módulo). Carga las librerías oficiales de Firebase y expone dos objetos
   // que usa el resto de la app: window.__firebaseAuth (sesiones) y window.__firebaseDb (base de datos).
@@ -262,6 +262,10 @@ select,input,textarea{
   width:100%;max-width:100%;padding:11px 12px;border-radius:var(--radius-sm);border:1px solid transparent;
   background:var(--fill-strong);color:var(--text);font-size:16px;font-family:inherit;
   transition:box-shadow .15s ease, background .15s ease;
+}
+/* Foco visible al navegar con teclado */
+.tab:focus-visible,.menu-item:focus-visible,tr.prow:focus-visible,.cbcard:focus-visible,button:focus-visible,a:focus-visible{
+  outline:2px solid var(--primary);outline-offset:2px
 }
 select:focus,input:focus,textarea:focus{
   outline:none;border-color:var(--primary);
@@ -519,17 +523,6 @@ function diaLabel(f){
   const w = weekdayOf(f); if(w==null) return "";
   return esFestivo(f) ? `${DIAS_SEMANA[w]} · Festivo` : DIAS_SEMANA[w];
 }
-// Saldos de la hoja "Resumen Bonos y Compensat." del Excel (corte al 1-oct-2026).
-// El Excel calcula días = horas / 8, así que aquí se guardan en horas (días × 8).
-const EXCEL_SALDOS_REF = {
-  edison:   {nombre:"Edison Acosta",    compHoras:58,    domHoras:16, bonoDias:46},
-  nicolas:  {nombre:"Nicolas Espitia",  compHoras:0,     domHoras:0,  bonoDias:43},
-  lina:     {nombre:"Lina Angel",       compHoras:8,     domHoras:0,  bonoDias:3},
-  martinri: {nombre:"Martinri Savedra", compHoras:143.7, domHoras:0,  bonoDias:46},
-  ivan:     {nombre:"Ivan Chipiaje",    compHoras:67,    domHoras:0,  bonoDias:30}
-};
-// Busca el saldo histórico (control anterior) de un ingeniero por su primer nombre.
-function excelRef(name){ return EXCEL_SALDOS_REF[sanitizeId(String(name||"").trim().split(/\s+/)[0])] || null; }
 // Valores especiales del campo Proyecto cuando no hay un código asignado.
 const SIN_PROYECTO = "Sin proyecto / servicio activo";
 const POR_DEFINIR = "Por definir";
@@ -554,6 +547,13 @@ let unsubMine=null, unsubAll=null, unsubEst=null, unsubEng=null, unsubProj=null;
 // Último mensaje mostrado al usuario (verde = ok, rojo = bad) y error general de conexión.
 let formMsg = "", formMsgType = "ok";
 let globalError = "";
+// Consultas que llegaron a su tope de registros: lo que se muestra podría estar incompleto.
+const limitesAlcanzados = new Set();
+function revisarLimite(nombre, n, tope){
+  const antes = limitesAlcanzados.size;
+  if(n >= tope) limitesAlcanzados.add(`${nombre} (tope de ${tope} registros)`);
+  return limitesAlcanzados.size !== antes;
+}
 
 // Muestra arriba un error de conexión con Firebase; si falta un índice, explica cómo crearlo.
 function showGlobalError(context, err){
@@ -688,7 +688,6 @@ let compSaldos = {};    // comp_saldos/<slug ingeniero>: {v:2, compHoras, domHor
 let compLoaded = {comp:false, campo:false};
 let compUnsubs = [];
 // Costos (Fase 2, solo admin): parámetros, salarios por ingeniero y gastos de los proyectos
-let saldosCargados = false, saldosMigrados = false;   // comp_saldos ya llegó / ya se guardaron los saldos de referencia
 let costosCfg = null;   // costos/config
 let costosCargado = false;   // ya llegaron los costos guardados (antes de eso no se deja guardar, para no sobrescribir con vacíos)
 let costosBorrador = {};     // lo que se ha escrito en la página Costos y aún no se guarda {id del campo: valor}
@@ -765,7 +764,83 @@ function renderMenuBtn(menu){
 // ---------- 4. PANTALLAS ----------
 // Dibuja toda la app: título, pestañas, selector de mes y la pestaña activa (o la pantalla de inicio de sesión).
 // Se llama cada vez que cambian los datos o la pestaña. Al final conecta los eventos (wireEvents).
+// --- Accesibilidad: se aplica después de cada dibujado ---
+// Enlaza cada etiqueta con su campo (lectores de pantalla) y permite usar con teclado (Tab + Enter/Espacio)
+// las pestañas, el menú y las filas que se abren con clic.
+let idAuto = 0;
+function accesibilidad(){
+  app.querySelectorAll("label").forEach(lb=>{
+    if(lb.htmlFor || lb.querySelector("input, select, textarea")) return;
+    let c = lb.nextElementSibling;
+    while(c && c.classList && c.classList.contains("hint")) c = c.nextElementSibling;
+    if(c && !/^(INPUT|SELECT|TEXTAREA)$/.test(c.tagName)){ const dentro = c.querySelectorAll ? c.querySelectorAll("input, select, textarea") : []; c = dentro.length === 1 ? dentro[0] : null; }
+    if(!c) return;
+    if(!c.id) c.id = "campo_auto_" + (++idAuto);
+    lb.htmlFor = c.id;
+  });
+  app.querySelectorAll(".tab[data-tab], .menu-item[data-tab], #btn_menu, tr.prow, .cbcard[data-eng], a[data-act]").forEach(el=>{
+    if(!el.hasAttribute("tabindex")) el.tabIndex = 0;
+    if(!el.hasAttribute("role")) el.setAttribute("role", el.tagName==="A" ? "link" : "button");
+    if(el.classList.contains("tab") && el.dataset.tab) el.setAttribute("aria-current", el.classList.contains("active") ? "page" : "false");
+    el.onkeydown = e=>{ if((e.key==="Enter" || e.key===" ") && e.target===el){ e.preventDefault(); el.click(); } };
+  });
+  app.querySelectorAll(".msg").forEach(m=>{ m.setAttribute("role","status"); m.setAttribute("aria-live","polite"); });
+}
+
+// --- Conservar lo escrito al redibujar ---
+// La pantalla se vuelve a dibujar completa cada vez que llegan datos. Para que eso no borre lo que alguien
+// está escribiendo, antes de redibujar se anotan los campos modificados (y cuál tiene el cursor) y después
+// se restauran, siempre que siga en la misma pantalla y el mismo formulario.
+let ctxPrevio = "";            // pantalla/formulario del último dibujado
+let descartarEscrito = false;  // true: el próximo dibujado NO restaura (después de guardar con éxito)
+function contextoPantalla(){
+  return [authState, loginMode, view, projSel, usrEdit, editingId, editingOrden ? editingOrden.id : "", selectedEngineer, selectedMonth].join("|");
+}
+// Identifica un campo: su id o, si no tiene, etiqueta + clase + atributos data-* + valor fijo (casillas).
+function claveCampo(el, vistos){
+  let k = el.id ? "#"+el.id : el.tagName + "." + el.className + "|" + JSON.stringify(el.dataset) + (el.type==="checkbox"||el.type==="radio" ? "|"+el.getAttribute("value") : "");
+  if(!el.id){ vistos[k] = (vistos[k]||0) + 1; k += "#" + vistos[k]; }
+  return k;
+}
+function campoModificado(el){
+  if(el.type==="checkbox" || el.type==="radio") return el.checked !== el.defaultChecked;
+  if(el.tagName==="SELECT"){ const def = [...el.options].findIndex(o=>o.defaultSelected); return el.selectedIndex !== (def < 0 ? 0 : def); }
+  return el.value !== el.defaultValue;
+}
+function capturarEscrito(){
+  const r = { ctx: ctxPrevio, campos: {}, foco: null };
+  const vistos = {};
+  app.querySelectorAll("input, select, textarea").forEach(el=>{
+    const k = claveCampo(el, vistos);
+    if(el === document.activeElement){ let ini = null, fin = null; try{ ini = el.selectionStart; fin = el.selectionEnd; }catch(e){} r.foco = { k, ini, fin }; }
+    if(el.disabled || el.type==="password" && !el.value) return;
+    if(campoModificado(el)) r.campos[k] = (el.type==="checkbox"||el.type==="radio") ? { c: el.checked } : { v: el.value };
+  });
+  return r;
+}
+function restaurarEscrito(r){
+  ctxPrevio = contextoPantalla();
+  const descartar = descartarEscrito; descartarEscrito = false;
+  if(!r || descartar || r.ctx !== ctxPrevio) return;
+  const vistos = {};
+  app.querySelectorAll("input, select, textarea").forEach(el=>{
+    const k = claveCampo(el, vistos), c = r.campos[k];
+    if(c && !el.disabled){
+      if("c" in c) el.checked = c.c;
+      else if(el.tagName!=="SELECT" || [...el.options].some(o=>o.value===c.v)) el.value = c.v;
+    }
+    if(r.foco && r.foco.k === k && document.activeElement !== el){
+      try{ el.focus({preventScroll:true}); if(r.foco.ini!=null && el.setSelectionRange) el.setSelectionRange(r.foco.ini, r.foco.fin); }catch(e){}
+    }
+  });
+}
 function render(){
+  const escrito = capturarEscrito();
+  renderPantalla();
+  restaurarEscrito(escrito);
+  accesibilidad();
+}
+function renderPantalla(){
   // Sin sesión (o mientras se verifica) solo se muestra la pantalla de inicio; nada de la app.
   if(authState !== "dentro"){ app.innerHTML = renderLogin(); wireEvents(); return; }
   const { barra, menu } = barraYMenu();
@@ -776,6 +851,7 @@ function render(){
   app.innerHTML = `
     <h1>Registro Diario de Actividades</h1>
     <div class="sub">Área de Proyectos · Process Solutions · Control de actividades y tiempos</div>
+    ${limitesAlcanzados.size ? `<div class="msg bad" style="display:block"><b>Aviso:</b> hay más datos de los que la app alcanza a leer de una vez, así que algunos totales pueden estar incompletos: ${escH([...limitesAlcanzados].join("; "))}. Avisa al administrador de la app.</div>` : ""}
     ${globalError ? `<div class="msg bad" style="display:block">${escH(globalError)} <button class="tiny" id="btn_dismiss_error" style="margin-left:8px">Cerrar</button></div>` : ""}
     <div class="tabs">
       ${menu.length ? renderMenuBtn(menu) : ""}
@@ -1045,7 +1121,7 @@ function renderEquipo(){
 
 // Muestra un mensaje al usuario en la caja de mensajes de la pestaña actual.
 function showMsg(text, type){
-  formMsg = text; formMsgType = type;
+  formMsg = text; formMsgType = type; msgSeq++;
   const box = document.getElementById("msgbox") || document.getElementById("msgbox2") || document.getElementById("msgbox3") || document.getElementById("msgbox4");
   if(box){ box.textContent = text; box.className = "msg " + type; }
 }
@@ -1198,7 +1274,14 @@ function wireEvents(){
 
 // Ejecuta la acción de cada botón según su data-act (editar, eliminar, abrir proyecto, marcar pagado…).
 // ds trae los demás atributos data-* del botón (id, ingeniero, fecha…).
+let msgSeq = 0;   // cuenta los mensajes mostrados (para saber si una acción terminó con mensaje de éxito)
 async function handleAction(act, ds){
+  const antes = msgSeq;
+  await ejecutarAccion(act, ds);
+  // Si la acción terminó bien, se descarta lo escrito: el formulario muestra lo que quedó guardado.
+  if(msgSeq !== antes && formMsgType === "ok"){ descartarEscrito = true; render(); }
+}
+async function ejecutarAccion(act, ds){
   if(act === "cancel-confirm"){ pendingConfirm = null; render(); return; }
   // Las reglas de Firebase lo impiden de todos modos; aquí se avisa antes de intentarlo.
   if(CAP_ACCION[act] && !puede(CAP_ACCION[act])){ showMsg("Tu usuario no tiene permiso para esta acción.", "bad"); return; }
@@ -1360,10 +1443,9 @@ async function onSubmit(ev){
       showMsg("Registro guardado correctamente.", "ok");
       selectedTaskOption = "";
     }
-    // Limpia el formulario y vuelve a la fecha de hoy.
-    ev.target.reset();
-    document.getElementById("f_fecha").value = todayStr();
+    // Limpia el formulario y vuelve a la fecha de hoy (dibujado limpio: no se conserva lo que estaba escrito).
     selectedTipoHora = "Normal";
+    descartarEscrito = true;
     render();
   }catch(err){
     showMsg("No se pudo guardar: " + (err.message || err.code), "bad");
@@ -2378,10 +2460,8 @@ function mesPagoPara(fecha){ const m = (fecha||"").slice(0,7); return m > select
 function saldoDe(name){
   const saved = compSaldos[slugify(name)];
   if(saved && saved.v === SALDO_VERSION) return saved;
-  const ref = excelRef(name);
-  return ref
-    ? { v:SALDO_VERSION, compHoras:ref.compHoras, domHoras:ref.domHoras, bonoDias:ref.bonoDias, domSaldoMesPago:"", bonoSaldoMesPago:"", _auto:true }
-    : { v:SALDO_VERSION, compHoras:0, domHoras:0, bonoDias:0, domSaldoMesPago:"", bonoSaldoMesPago:"", _auto:true, _sinExcel:true };
+  // Sin saldo guardado en la base (comp_saldos): empieza en cero.
+  return { v:SALDO_VERSION, compHoras:0, domHoras:0, bonoDias:0, domSaldoMesPago:"", bonoSaldoMesPago:"", _auto:true };
 }
 
 // Calcula para cada ingeniero, desde SALDO_CORTE: horas a compensatorio, compensatorios tomados,
@@ -2470,11 +2550,7 @@ function cbTop(){
 }
 // Texto que explica de dónde viene el saldo histórico del ingeniero.
 function cbExcelHint(r, kind){
-  const ref = excelRef(r.name);
-  if(!ref) return `Sin saldo histórico cargado para este ingeniero.`;
-  if(!r.saldo._auto) return `Saldo histórico <b>corregido manualmente</b>.`;
-  const v = kind==="comp" ? `compensatorio ${fmtDH(ref.compHoras)} · domingos por pagar ${fmtDH(ref.domHoras)}` : `${ref.bonoDias} días de bono pendientes`;
-  return `Valores cargados del control anterior: ${v}.`;
+  return r.saldo._auto ? `Sin saldo histórico cargado para este ingeniero.` : `Saldo histórico registrado.`;
 }
 
 // --- Pestaña Compensatorios ---
@@ -2677,7 +2753,7 @@ async function cbToggleBono(engineer, fecha){
 // Guarda el saldo histórico de un ingeniero en comp_saldos.
 async function cbWriteSaldo(engineer, patch){
   const base = { ...saldoDe(engineer) };
-  delete base._auto; delete base._sinExcel;
+  delete base._auto;
   const data = { ...base, ...patch, v:SALDO_VERSION, engineer, updatedAt:new Date().toISOString() };
   await db.doc("comp_saldos/"+slugify(engineer)).set(data);
 }
@@ -2820,7 +2896,6 @@ function stopCompData(){
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
   costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; costosCargado = false; costosBorrador = {};
-  saldosCargados = false; saldosMigrados = false;
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real lo que necesitan Compensatorios, Bonos, Costos, gastos y rentabilidad,
@@ -2835,41 +2910,29 @@ function subscribeCompData(){
   // Consultas de un solo campo (sin orderBy) para no requerir índices compuestos; se ordena en el navegador.
   // Horas Extra (generan compensatorio o pago) y días Compensatorio (descuentan).
   if(verComp || verCostos) compUnsubs.push(db.collection("activities").where("tipoHora","in",["Extra","Compensatorio"]).limit(5000)
-    .onSnapshot(snap=>{ compEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() })); compLoaded.comp = true; rr(); },
+    .onSnapshot(snap=>{ compEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() })); compLoaded.comp = true; revisarLimite("Horas extra y compensatorios", snap.docs.length, 5000); rr(); },
       err=>showGlobalError("Compensatorios", err)));
   // Registros en campo (bono de campo).
   if(verComp || verCostos) compUnsubs.push(db.collection("activities").where("actividad","==",ACTIVIDAD_CAMPO).limit(5000)
-    .onSnapshot(snap=>{ campoEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() })); compLoaded.campo = true; rr(); },
+    .onSnapshot(snap=>{ campoEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() })); compLoaded.campo = true; revisarLimite("Registros en campo", snap.docs.length, 5000); rr(); },
       err=>showGlobalError("Bonos de campo", err)));
   if(verComp) compUnsubs.push(db.collection("comp_ajustes").limit(5000)
-    .onSnapshot(snap=>{ compAjustes = toMap(snap); rr(); }, err=>showGlobalError("Ajustes de compensatorios (revisa las reglas de Firestore)", err)));
+    .onSnapshot(snap=>{ compAjustes = toMap(snap); revisarLimite("Ajustes de compensatorios", snap.docs.length, 5000); rr(); }, err=>showGlobalError("Ajustes de compensatorios (revisa las reglas de Firestore)", err)));
   if(verComp) compUnsubs.push(db.collection("campo_pagos").limit(5000)
-    .onSnapshot(snap=>{ campoPagos = toMap(snap); rr(); }, err=>showGlobalError("Pagos de bono de campo (revisa las reglas de Firestore)", err)));
+    .onSnapshot(snap=>{ campoPagos = toMap(snap); revisarLimite("Pagos de bono de campo", snap.docs.length, 5000); rr(); }, err=>showGlobalError("Pagos de bono de campo (revisa las reglas de Firestore)", err)));
   // Costos (Fase 2): parámetros y salarios, y gastos de los proyectos.
   if(verCostos) compUnsubs.push(db.collection("costos").limit(500)
     .onSnapshot(snap=>{ const m = {}; let cfg = null; snap.docs.forEach(d=>{ if(d.id==="config") cfg = d.data(); else if(d.id.startsWith("ing_")) m[d.id.slice(4)] = d.data(); }); costosCfg = cfg; costosIng = m; costosCargado = true; rrCostos(); },
       err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
   if(puede("gastos.ver")) compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
-    .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); rrCostos(); },
+    .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gastos de proyectos", snap.docs.length, 5000); rrCostos(); },
       err=>showGlobalError("Gastos de proyectos (revisa las reglas de Firestore)", err)));
   // Rentabilidad (Fase 3): valor vendido, costo ofertado y % de avance de cada proyecto.
   if(verCostos) compUnsubs.push(db.collection("proyecto_finanzas").limit(5000)
     .onSnapshot(snap=>{ finanzas = toMap(snap); rrCostos(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); },
       err=>showGlobalError("Rentabilidad de proyectos (revisa las reglas de Firestore)", err)));
   if(verComp) compUnsubs.push(db.collection("comp_saldos").limit(500)
-    .onSnapshot(snap=>{ compSaldos = toMap(snap); saldosCargados = true; guardarSaldosDeReferencia(); rr(); }, err=>showGlobalError("Saldos iniciales (revisa las reglas de Firestore)", err)));
-}
-// Paso previo a quitar EXCEL_SALDOS_REF del código: si el saldo histórico de un ingeniero todavía sale de esa
-// tabla (no está guardado en la base), se guarda una sola vez en comp_saldos. No cambia ningún valor.
-async function guardarSaldosDeReferencia(){
-  if(saldosMigrados || !saldosCargados || !engineersList.length || !puede("comp.editar")) return;
-  saldosMigrados = true;
-  for(const n of engineerNames()){
-    const sdo = saldoDe(n);
-    if(sdo._auto && !sdo._sinExcel){
-      try{ await cbWriteSaldo(n, {}); }catch(err){ console.error("Saldo histórico de " + n, err); }
-    }
-  }
+    .onSnapshot(snap=>{ compSaldos = toMap(snap); rr(); }, err=>showGlobalError("Saldos iniciales (revisa las reglas de Firestore)", err)));
 }
 
 // ---------- Subscripciones ----------
@@ -2885,6 +2948,7 @@ function subscribeMine(){
     .orderBy("fecha","desc").limit(500)
     .onSnapshot(snap=>{
       myEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() }));
+      revisarLimite(`Actividades de ${selectedEngineer} en ${monthLabel(selectedMonth)}`, snap.docs.length, 500);
       render();
     }, err=>showGlobalError("Mis actividades", err));
 }
@@ -2925,7 +2989,8 @@ function subscribeAll(){
   unsubAll = db.collection("activities").where("fecha",">=",start).where("fecha","<=",end).limit(1000)
     .onSnapshot(snap=>{
       allEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() }));
-      if(view==="resumen") render();
+      const nuevoAviso = revisarLimite(`Registros de ${monthLabel(selectedMonth)}`, snap.docs.length, 1000);
+      if(view==="resumen" || nuevoAviso) render();
     }, err=>showGlobalError("Resumen general", err));
 }
 
@@ -3031,7 +3096,6 @@ function subscribeEngineers(){
     else if(!selectedEngineer || !engineerNames().includes(selectedEngineer)){
       selectedEngineer = engineerNames()[0] || "";
     }
-    guardarSaldosDeReferencia(); // por si los saldos llegaron antes que la lista del equipo
     subscribeMine();
     subscribeOpenTasks();
     render();
@@ -3587,6 +3651,26 @@ async function submitReset(){
   }
   loginBusy = false; render();
 }
+// --- Cierre por inactividad: si nadie usa la app en 8 horas, se cierra la sesión ---
+const INACTIVIDAD_MAX_MS = 8 * 60 * 60 * 1000;
+const CLAVE_ACTIVIDAD = "ps_ultima_actividad";
+let ultimaMarca = 0;
+function marcarActividad(){
+  const ahora = Date.now();
+  if(ahora - ultimaMarca < 60000) return;      // como mucho una anotación por minuto
+  ultimaMarca = ahora;
+  try{ localStorage.setItem(CLAVE_ACTIVIDAD, String(ahora)); }catch(e){}
+}
+function sesionVencida(){
+  let t = 0; try{ t = Number(localStorage.getItem(CLAVE_ACTIVIDAD)) || 0; }catch(e){}
+  return t > 0 && Date.now() - t > INACTIVIDAD_MAX_MS;
+}
+async function cerrarPorInactividad(){
+  try{ localStorage.removeItem(CLAVE_ACTIVIDAD); }catch(e){}
+  ultimaMarca = 0;
+  loginMode = "login"; loginMsg = "La sesión se cerró por inactividad. Vuelve a entrar con tu contraseña."; loginMsgType = "bad";
+  await logout();
+}
 async function logout(){
   stopAllSubs(); // antes de salir, para que las lecturas protegidas no den error de permisos
   try{ await window.__firebaseAuth.logout(); }catch(e){ console.error(e); }
@@ -3595,7 +3679,7 @@ async function logout(){
 function stopAllSubs(){
   [unsubMine, unsubAll, unsubEst, unsubEng, unsubProj, unsubOpenTasks, unsubUsuarios, unsubCierre].forEach(u=>{ try{ u && u(); }catch(e){} });
   unsubMine = unsubAll = unsubEst = unsubEng = unsubProj = unsubOpenTasks = unsubUsuarios = unsubCierre = null;
-  cierreHasta = ""; historialList = null;
+  cierreHasta = ""; historialList = null; limitesAlcanzados.clear();
   stopCompData();
   myEntries = []; allEntries = []; engineersList = []; projectsList = []; openTasksList = []; usuariosList = [];
   estimates = {}; projHoras = {}; projSel = ""; editingId = null; pendingConfirm = null; formMsg = "";
@@ -3615,6 +3699,8 @@ async function onSesion(){
   menuOpen = false; view = "form"; usrEdit = null;
   isOwner = false; myEngineer = ""; misRoles = new Set();
   if(!u){ authState = "fuera"; authEmail = ""; render(); return; }
+  if(sesionVencida()){ await cerrarPorInactividad(); return; }   // sesión guardada de hace más de 8 horas sin uso
+  ultimaMarca = 0; marcarActividad();
   authEmail = u.email; loginMsg = ""; loginBusy = false;
   let ficha = null;
   try{
@@ -3802,6 +3888,8 @@ async function crearCuentaIngeniero(i){
 
 // Arranque de la app: espera la conexión con Firebase y queda atenta a quién inicia o cierra sesión.
 async function init(){
+  ["click","keydown","touchstart"].forEach(ev=>document.addEventListener(ev, ()=>{ if(authState==="dentro") marcarActividad(); }, {passive:true}));
+  setInterval(()=>{ if(authState==="dentro" && sesionVencida()) cerrarPorInactividad(); }, 60000);
   document.addEventListener("click", e=>{ if(menuOpen && !e.target.closest(".menuwrap")){ menuOpen = false; render(); } });
   document.addEventListener("keydown", e=>{ if(menuOpen && e.key==="Escape"){ menuOpen = false; render(); } });
   render();
