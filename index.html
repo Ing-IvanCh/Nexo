@@ -1,6 +1,6 @@
 <!DOCTYPE html>
 <!--
-  REGISTRO DIARIO DE ACTIVIDADES — Área de Proyectos · Process Solutions
+  NEXO · Gestión de proyectos e ingeniería — Área de Proyectos · Process Solutions
   App de una sola página: todo (diseño, lógica y conexión) vive en este archivo para publicarlo
   en GitHub Pages sin instalar nada. Se publica con el nombre index.html.
   Partes del archivo, en orden:
@@ -14,7 +14,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Registro Diario de Actividades</title>
+<title>Nexo · Gestión de proyectos e ingeniería</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js" integrity="sha512-XMVd28F1oH/O71fzwBnV7HucLxVwtxf26XV8P4wPk26EDxuGZ91N8bsOttmnomcCD3CS5ZMRL50H0GgOHvegtg==" crossorigin="anonymous" referrerpolicy="no-referrer"></script>
 <script type="module">
   // CONEXIÓN CON FIREBASE (módulo). Carga las librerías oficiales de Firebase y expone dos objetos
@@ -435,8 +435,8 @@ tr.prow.psel td{background:var(--accent)}
 </head>
 <body>
 <div class="wrap" id="app">
-  <h1>Registro Diario de Actividades</h1>
-  <div class="sub">Área de Proyectos · Process Solutions · Control de actividades y tiempos</div>
+  <h1>Nexo</h1>
+  <div class="sub">Gestión de proyectos e ingeniería · Process Solutions</div>
   <div class="empty">Cargando…</div>
 </div>
 
@@ -849,8 +849,8 @@ function renderPantalla(){
   const ro = soloLectura(view);
   // Arma todo el HTML de la pantalla de una vez y lo reemplaza.
   app.innerHTML = `
-    <h1>Registro Diario de Actividades</h1>
-    <div class="sub">Área de Proyectos · Process Solutions · Control de actividades y tiempos</div>
+    <h1>Nexo</h1>
+    <div class="sub">Gestión de proyectos e ingeniería · Process Solutions</div>
     ${limitesAlcanzados.size ? `<div class="msg bad" style="display:block"><b>Aviso:</b> hay más datos de los que la app alcanza a leer de una vez, así que algunos totales pueden estar incompletos: ${escH([...limitesAlcanzados].join("; "))}. Avisa al administrador de la app.</div>` : ""}
     ${globalError ? `<div class="msg bad" style="display:block">${escH(globalError)} <button class="tiny" id="btn_dismiss_error" style="margin-left:8px">Cerrar</button></div>` : ""}
     <div class="tabs">
@@ -3472,7 +3472,7 @@ async function descargarCopiaSeguridad(){
       conteo[c] = snap.docs.length;
     }
     const ahora = new Date();
-    const copia = { app:"Registro diario de actividades · Process Solutions", formato:1, creada:ahora.toISOString(), por:authEmail, documentos:conteo, colecciones };
+    const copia = { app:"Nexo · Gestión de proyectos e ingeniería · Process Solutions", formato:1, creada:ahora.toISOString(), por:authEmail, documentos:conteo, colecciones };
     const blob = new Blob([JSON.stringify(copia, null, 1)], { type:"application/json" });
     const fecha = `${ahora.getFullYear()}-${String(ahora.getMonth()+1).padStart(2,"0")}-${String(ahora.getDate()).padStart(2,"0")}`;
     await downloadsCap.save({ filename:`Copia_seguridad_${fecha}.json`, data:blob });
@@ -3621,8 +3621,8 @@ function renderLogin(){
   }
   return `<div class="loginwrap"><div class="card logincard">
       ${logo}
-      <h2 class="logintitle">Registro Diario de Actividades</h2>
-      <div class="sub" style="text-align:center">Área de Proyectos</div>
+      <h2 class="logintitle">Nexo</h2>
+      <div class="sub" style="text-align:center">Gestión de proyectos e ingeniería</div>
       ${cuerpo}
     </div></div>`;
 }
@@ -3907,7 +3907,7 @@ async function init(){
     setTimeout(()=>URL.revokeObjectURL(url), 2000);
   }};
   if(!db || !window.__firebaseAuth){
-    app.innerHTML = `<h1>Registro Diario de Actividades</h1><div class="card"><div class="empty">No se pudo conectar con Firebase. Revisa tu conexión o recarga la página.</div></div>`;
+    app.innerHTML = `<h1>Nexo</h1><div class="card"><div class="empty">No se pudo conectar con Firebase. Revisa tu conexión o recarga la página.</div></div>`;
     return;
   }
   // Cada vez que alguien entra o sale se decide qué ve (pantalla de inicio, administrador o ingeniero).
