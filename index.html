@@ -398,6 +398,9 @@ tr:last-child td{border-bottom:none}
 .cbfold summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--primary)}
 .cbfold-body{margin-top:10px}
 .cbfold summary .secres{color:var(--sub);font-weight:500}
+/* Bitácora del proyecto */
+.nota{border-left:3px solid var(--primary);padding:6px 10px;margin-top:8px;background:var(--fill);border-radius:0 var(--radius-sm) var(--radius-sm) 0}
+.nota-h{font-size:12px;color:var(--sub)} .nota-t{font-size:14px;white-space:pre-wrap;margin-top:2px}
 /* Casillas en línea (equipo del proyecto, ingenieros de una orden) */
 .chips{display:flex;flex-wrap:wrap;gap:6px}
 .chip{display:inline-flex;align-items:center;gap:6px;margin:0;padding:6px 10px;border-radius:999px;background:var(--fill);font-size:13px;font-weight:500;color:var(--text);cursor:pointer}
@@ -618,6 +621,7 @@ const PUEDE = {
   "costos.editar":   ["contabilidad"],
   "gastos.ver":      ["compras","contabilidad","gerencia"],
   "gastos.crear":    ["compras","contabilidad"],
+  "gestion.ver":     ["contabilidad","gerencia"],              // riesgos, cambios de alcance y bitácora (solo admin los edita)
   "gastos.todos":    ["contabilidad"],                         // borrar gastos que registró otra persona
   "comp.ver":        ["talento","contabilidad","gerencia"],
   "comp.editar":     ["talento"],
@@ -679,6 +683,7 @@ const CAP_ACCION = {
   "costos-save":"costos.editar", "rent-save":"costos.editar", "gasto-save":"gastos.crear",
   "cb-trat":"comp.editar", "cb-dom-pago":"comp.editar", "cb-bono-pago":"comp.editar", "cb-saldo-pago":"comp.editar", "cb-save-saldo":"comp.editar",
   "ask-cierre":"admin", "confirm-cierre":"admin", "hist-reload":"admin",
+  "gest-save":"admin", "gest-edit":"admin", "ask-del-gest":"admin", "confirm-del-gest":"admin",
   "usr-new":"admin", "usr-edit":"admin", "usr-save":"admin", "usr-resend":"admin", "ask-usr-remove":"admin", "confirm-usr-remove":"admin"
 };
 let authEmail = "";            // correo de la sesión actual
@@ -713,6 +718,8 @@ let costosCfg = null;   // costos/config
 let costosCargado = false;   // ya llegaron los costos guardados (antes de eso no se deja guardar, para no sobrescribir con vacíos)
 let costosBorrador = {};     // lo que se ha escrito en la página Costos y aún no se guarda {id del campo: valor}
 let costosIng = {};     // slug ingeniero -> {engineer, salario}
+let gestion = [];       // proyecto_gestion: riesgos/problemas, cambios de alcance y notas de bitácora de todos los proyectos
+let gestEdit = null;    // riesgo o cambio que se está editando: {clase, id}
 let gastos = [];        // proyecto_gastos
 let finanzas = {};      // proyecto_finanzas/<id proyecto>: valor vendido, costo ofertado y % de avance (Fase 3)
 let compSel = "";       // ingeniero abierto en la pestaña Compensatorios
@@ -819,7 +826,7 @@ function accesibilidad(){
 let ctxPrevio = "";            // pantalla/formulario del último dibujado
 let descartarEscrito = false;  // true: el próximo dibujado NO restaura (después de guardar con éxito)
 function contextoPantalla(){
-  return [authState, loginMode, view, projSel, usrEdit, editingId, editingOrden ? editingOrden.id : "", selectedEngineer, selectedMonth].join("|");
+  return [authState, loginMode, view, projSel, usrEdit, editingId, editingOrden ? editingOrden.id : "", gestEdit ? gestEdit.id : "", selectedEngineer, selectedMonth].join("|");
 }
 // Identifica un campo: su id o, si no tiene, etiqueta + clase + atributos data-* + valor fijo (casillas).
 function claveCampo(el, vistos){
@@ -1182,6 +1189,10 @@ function wireEvents(){
     localStorage.setItem("ivan_sel_month", selectedMonth);
     subscribeMine(); if(puede("registros.todos")) subscribeAll(); render();
   };
+  // Ficha del proyecto: el líder ya hace parte del equipo, así que su casilla no se muestra en "Equipo asignado"
+  const pfLider = document.getElementById("pf_lider");
+  const ocultarLider = ()=>{ if(pfLider) document.querySelectorAll(".chip[data-eq]").forEach(c=>{ c.style.display = c.dataset.eq===pfLider.value ? "none" : ""; }); };
+  if(pfLider){ pfLider.onchange = ocultarLider; ocultarLider(); }
   // Costos: lo escrito sin guardar se recuerda aunque la página se vuelva a dibujar
   document.querySelectorAll(".costo_campo").forEach(el=>{ el.oninput = ()=>{ costosBorrador[el.id] = el.value; }; });
   // Usuarios y accesos: el campo del Equipo solo aparece al marcar el rol Ingeniero
@@ -1284,7 +1295,8 @@ function wireEvents(){
   const pfCodigo = document.getElementById("pf_codigo");
   if(pfCodigo) pfCodigo.oninput = ()=>{ pfCodigo.dataset.auto = "0"; };
   if(pfTipo && pfCodigo && projSel==="__new__") pfTipo.onchange = ()=>{ if(pfCodigo.dataset.auto==="1") pfCodigo.value = nextCodigo(pfTipo.value); };
-  document.querySelectorAll(".orden_estado").forEach(sel=>{
+  document.querySelectorAll(".gest_estado").forEach(sel=>{ sel.onchange = async ()=>{ if(!isOwner) return; const a = msgSeq; await updateGestionEstado(sel.dataset.id, sel.value); if(msgSeq!==a && formMsgType==="ok"){ descartarEscrito = true; render(); } }; });
+  document.querySelectorAll(".orden_estado:not(.gest_estado)").forEach(sel=>{
     sel.onchange = ()=> updateOrdenEstado(sel.dataset.proj, sel.dataset.orden, sel.value);
   });
 
@@ -1384,12 +1396,17 @@ async function ejecutarAccion(act, ds){
   if(act === "costos-save"){ await saveCostos(); return; }
   if(act === "gasto-save"){ await saveGasto(ds.proj); return; }
   if(act === "rent-save"){ await saveRentab(ds.proj); return; }
+  if(act === "gest-save"){ await saveGestion(ds.clase, ds.proj); return; }
+  if(act === "gest-edit"){ const g = gestion.find(x=>x.id===ds.id); if(g){ gestEdit = { clase:g.clase, id:g.id }; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById(g.clase==="riesgo" ? "gr_desc" : "gc_desc"); if(el) el.focus(); } return; }
+  if(act === "gest-cancel"){ gestEdit = null; render(); return; }
+  if(act === "ask-del-gest"){ pendingConfirm = {type:"deleteGest", key: ds.id}; render(); return; }
+  if(act === "confirm-del-gest"){ await deleteGestion(ds.id); return; }
   if(act === "ask-del-gasto"){ pendingConfirm = {type:"deleteGasto", key: ds.id}; render(); return; }
   if(act === "confirm-del-gasto"){ await deleteGasto(ds.id); return; }
   if(act === "inf-consumo"){ await loadConsumoProyectos(true); return; }
   if(act === "inf-proj"){ view = "proyectos"; projSel = ds.id; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const pr = projectsList.find(x=>x.id===ds.id); if(pr && !projHoras[pr.id]) loadProjHoras(pr); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-new"){ projSel = "__new__"; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
-  if(act === "proj-close"){ projSel = ""; editingOrden = null; pendingConfirm = null; render(); return; }
+  if(act === "proj-close"){ projSel = ""; editingOrden = null; gestEdit = null; pendingConfirm = null; render(); return; }
   if(act === "proj-save"){ await saveProject(); return; }
   if(act === "ask-del-proj"){ pendingConfirm = {type:"deleteProj", key: ds.id}; render(); return; }
   if(act === "confirm-del-proj"){ await deleteProject(ds.id); return; }
@@ -1668,11 +1685,14 @@ function renderProyectos(){
   // Avisos: contratos por vencer, pendientes de pago y órdenes abiertas.
   const alertas = [];
   if(vencen.length) alertas.push(`<div class="palert bad"><b>Contratos por vencer:</b> ${vencen.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${diasHasta(p.fechaFin)<0?"vencido":diasHasta(p.fechaFin)+" días"})`).join(" · ")}</div>`);
-  const sobre = projectsList.filter(p=>{ const c = consumoDe(p); return c && (c.nivel==="bad" || c.nivel==="warn"); });
+  const sobre = projectsList.filter(p=>{ if(!conLineaBase(p)) return false; const c = consumoDe(p); return c && (c.nivel==="bad" || c.nivel==="warn"); });
   if(sobre.length) alertas.push(`<div class="palert ${sobre.some(p=>consumoDe(p).nivel==="bad")?"bad":"warn"}"><b>Consumo de horas:</b> ${sobre.map(p=>{ const c = consumoDe(p); return `<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${Math.round(c.pct)} %)`; }).join(" · ")}</div>`);
   const ar = alertasRentabilidad();
   if(ar.margen.length) alertas.push(`<div class="palert ${ar.margen.some(({x})=>x.nivel==="bad")?"bad":"warn"}"><b>Margen bajo:</b> ${ar.margen.map(({p,x})=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (${fmtPct(x.margenRef)})`).join(" · ")}</div>`);
   if(ar.avance.length) alertas.push(`<div class="palert ${ar.avance.some(({x})=>x.nivelAvance==="bad")?"bad":"warn"}"><b>Avance atrasado frente a las horas:</b> ${ar.avance.map(({p,x})=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a> (avance ${fmtPct(x.avance)}, horas ${fmtPct(x.consPct)})`).join(" · ")}</div>`);
+  const ag = alertasGestion();
+  if(ag.riesgos.length) alertas.push(`<div class="palert bad"><b>Riesgos y problemas abiertos de impacto alto:</b> ${ag.riesgos.map(({g,codigo})=>`<a data-act="proj-open" data-id="${escH(g.proyId)}">${escH(codigo)}</a> ${escH(String(g.descripcion||"").slice(0,60))}`).join(" · ")}</div>`);
+  if(ag.cambios.length) alertas.push(`<div class="palert warn"><b>Cambios de alcance pendientes de cobrar:</b> ${ag.cambios.map(({g,codigo})=>`<a data-act="proj-open" data-id="${escH(g.proyId)}">${escH(codigo)}</a>${g.horas ? ` (+${fmtN(g.horas)} h)` : ""}`).join(" · ")}</div>`);
   if(pendPago.length) alertas.push(`<div class="palert warn"><b>Pendientes de pago:</b> ${pendPago.map(p=>`<a data-act="proj-open" data-id="${escH(p.id)}">${escH(p.codigo)} ${escH(p.cliente||"")}</a>`).join(" · ")}</div>`);
   if(nOrdAb) alertas.push(`<div class="palert info"><b>${nOrdAb} orden(es) abierta(s)</b> en contratos vigentes.</div>`);
 
@@ -1736,8 +1756,8 @@ function renderProjDetalle(){
         <option value="si" ${p.lineaBase==="si"?"selected":""}>Sí, con línea base</option>
         <option value="no" ${p.lineaBase==="no"?"selected":""}>No, sin línea base</option></select></div>
     </div>
-    <label>Equipo asignado</label>
-    <div class="chips">${engineerNames().concat((p.equipo||[]).filter(n=>!engineerNames().includes(n))).map(n=>`<label class="chip"><input type="checkbox" class="pf_eq" value="${escH(n)}" ${(p.equipo||[]).includes(n)?"checked":""}> ${escH(n)}</label>`).join("") || `<span class="hint">No hay ingenieros en el Equipo.</span>`}</div>
+    <label>Equipo asignado <span class="hint">(además del líder)</span></label>
+    <div class="chips">${engineerNames().concat((p.equipo||[]).filter(n=>!engineerNames().includes(n))).map(n=>`<label class="chip" data-eq="${escH(n)}" ${n===p.lider?'style="display:none"':""}><input type="checkbox" class="pf_eq" value="${escH(n)}" ${(p.equipo||[]).includes(n)?"checked":""}> ${escH(n)}</label>`).join("") || `<span class="hint">No hay ingenieros en el Equipo.</span>`}</div>
     <label>Notas y seguimiento <span class="hint">(pagos pendientes, novedades, contactos…)</span></label>
     <textarea id="pf_notas">${escH(p.notas||"")}</textarea>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
@@ -1780,7 +1800,150 @@ function renderSeccionesProyecto(p){
     const res = !x ? "sin valor vendido" : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : `margen ${fmtPct(x.margenRef)}${x.pron ? " al cierre" : " a la fecha"}`;
     out += cbFold("sec-rent-"+p.id, secTitulo("Rentabilidad", res), renderProjRentab(p));
   }
+  if(puede("gestion.ver")) out += renderGestion(p);
   return out;
+}
+
+// ---------- Gestión del proyecto: riesgos y problemas, cambios de alcance y bitácora ----------
+// Colección proyecto_gestion (admin escribe; contabilidad y gerencia consultan). Un documento por elemento:
+//   {proyId, codigo, clase:"riesgo"|"cambio"|"nota", fecha, descripcion, creadoPor, createdAt, ...}
+//   riesgo: tipo (Riesgo|Problema), impacto, responsable, accion, estado
+//   cambio: solicitadoPor, horas (adicionales estimadas), estado
+//   nota:   solo se agregan; no se editan ni se borran (también lo impiden las reglas)
+const RIESGO_TIPOS = ["Riesgo","Problema"];
+const RIESGO_IMPACTOS = ["Alto","Medio","Bajo"];
+const RIESGO_ESTADOS = ["Abierto","En seguimiento","Cerrado"];
+const CAMBIO_ESTADOS = ["Pendiente de cobrar","Cobrado","Asumido por la empresa"];
+const GEST_BADGE = { "Alto":"b-bloq", "Medio":"b-pend", "Bajo":"b-comp", "Abierto":"b-bloq", "En seguimiento":"b-pend", "Cerrado":"b-comp",
+  "Pendiente de cobrar":"b-pend", "Cobrado":"b-comp", "Asumido por la empresa":"b-bloq" };
+function gestionDe(p, clase){ return gestion.filter(g=>g.proyId===p.id && g.clase===clase).sort((a,b)=>String(b.fecha||"").localeCompare(String(a.fecha||"")) || String(b.createdAt||"").localeCompare(String(a.createdAt||""))); }
+function riesgoAbierto(g){ return g.clase==="riesgo" && g.estado!=="Cerrado"; }
+// Riesgos/problemas abiertos de impacto alto y cambios sin cobrar, de todos los proyectos (para avisos e informe).
+function alertasGestion(){
+  const cod = g=>{ const p = projectsList.find(x=>x.id===g.proyId); return p ? p.codigo : (g.codigo||"?"); };
+  return { riesgos: gestion.filter(g=>riesgoAbierto(g) && g.impacto==="Alto").map(g=>({ g, codigo:cod(g) })),
+           cambios: gestion.filter(g=>g.clase==="cambio" && g.estado==="Pendiente de cobrar").map(g=>({ g, codigo:cod(g) })) };
+}
+// Botones Editar / Eliminar de una fila (solo administradores).
+function gestAcciones(g){
+  if(!isOwner) return "";
+  const confirming = pendingConfirm && pendingConfirm.type==="deleteGest" && pendingConfirm.key===g.id;
+  return confirming
+    ? `<span class="confirmrow">¿Eliminar? <button class="tiny bad" data-act="confirm-del-gest" data-id="${escH(g.id)}">Sí</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
+    : `<button class="tiny" data-act="gest-edit" data-id="${escH(g.id)}">Editar</button> <button class="tiny bad" data-act="ask-del-gest" data-id="${escH(g.id)}">Eliminar</button>`;
+}
+function gestEstadoCelda(g, opciones){
+  return isOwner ? `<select class="orden_estado gest_estado" data-id="${escH(g.id)}">${selOpts(opciones, g.estado)}</select>`
+                 : `<span class="badge ${GEST_BADGE[g.estado]||"b-curso"}">${escH(g.estado||"—")}</span>`;
+}
+function renderGestion(p){
+  const ed = gestEdit ? gestion.find(g=>g.id===gestEdit.id && g.proyId===p.id) : null;
+  const edR = ed && ed.clase==="riesgo" ? ed : null, edC = ed && ed.clase==="cambio" ? ed : null;
+  // --- Riesgos y problemas ---
+  const rs = gestionDe(p, "riesgo"), abiertos = rs.filter(riesgoAbierto);
+  const rRows = rs.map(g=>`<tr>
+      <td data-label="Tipo">${escH(g.tipo||"Riesgo")}</td>
+      <td data-label="Descripción">${escH(g.descripcion||"")}${g.accion?`<div class="hint">Acción: ${escH(g.accion)}</div>`:""}</td>
+      <td data-label="Impacto"><span class="badge ${GEST_BADGE[g.impacto]||"b-curso"}">${escH(g.impacto||"—")}</span></td>
+      <td data-label="Responsable">${escH(g.responsable||"—")}</td>
+      <td data-label="Fecha">${escH(g.fecha||"—")}</td>
+      <td data-label="Estado">${gestEstadoCelda(g, RIESGO_ESTADOS)}</td>
+      <td data-label="">${gestAcciones(g)}</td></tr>`).join("");
+  const rForm = !isOwner ? "" : `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>${edR ? "Editando" : "Nuevo riesgo o problema"}</b> — riesgo: algo que puede pasar; problema: algo que ya está pasando.</div>
+      <div class="row2">
+        <div><label>Tipo</label><select id="gr_tipo">${selOpts(RIESGO_TIPOS, edR ? edR.tipo : "Riesgo")}</select></div>
+        <div><label>Impacto</label><select id="gr_impacto">${selOpts(RIESGO_IMPACTOS, edR ? edR.impacto : "Medio")}</select></div>
+      </div>
+      <label>Descripción</label><textarea id="gr_desc" maxlength="1000" placeholder="Ej: El cliente no ha entregado la lista de señales">${escH(edR ? edR.descripcion||"" : "")}</textarea>
+      <label>Acción o plan <span class="hint">(opcional)</span></label><input id="gr_accion" maxlength="500" value="${escH(edR ? edR.accion||"" : "")}" placeholder="Qué se va a hacer">
+      <div class="row2">
+        <div><label>Responsable</label><input id="gr_resp" list="gr_resp_list" maxlength="100" value="${escH(edR ? edR.responsable||"" : (p.lider||""))}"><datalist id="gr_resp_list">${engineerNames().map(n=>`<option value="${escH(n)}">`).join("")}</datalist></div>
+        <div><label>Fecha</label><input type="date" id="gr_fecha" value="${escH(edR ? edR.fecha||"" : todayStr())}"></div>
+      </div>
+      <label>Estado</label><select id="gr_estado">${selOpts(RIESGO_ESTADOS, edR ? edR.estado : "Abierto")}</select>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="primary" data-act="gest-save" data-clase="riesgo" data-proj="${escH(p.id)}" style="margin-top:0;flex:1">${edR ? "Guardar cambios" : "Agregar"}</button>
+        ${edR ? `<button class="secondary" data-act="gest-cancel" style="flex:1">Cancelar</button>` : ""}
+      </div></div>`;
+  const rAlto = abiertos.filter(g=>g.impacto==="Alto").length;
+  const rRes = rs.length ? `${abiertos.length} abierto(s)${rAlto ? ` · ${rAlto} de impacto alto` : ""}${rs.length>abiertos.length ? ` · ${rs.length-abiertos.length} cerrado(s)` : ""}` : "ninguno";
+  // --- Cambios de alcance ---
+  const cs = gestionDe(p, "cambio"), pend = cs.filter(g=>g.estado==="Pendiente de cobrar");
+  const hTot = cs.reduce((a,g)=>a+(Number(g.horas)||0), 0);
+  const cRows = cs.map(g=>`<tr>
+      <td data-label="Fecha">${escH(g.fecha||"—")}</td>
+      <td data-label="Descripción">${escH(g.descripcion||"")}</td>
+      <td data-label="Solicitado por">${escH(g.solicitadoPor||"—")}</td>
+      <td data-label="Horas adicionales">${g.horas!=null && g.horas!=="" ? fmtN(g.horas)+" h" : "—"}</td>
+      <td data-label="Estado">${gestEstadoCelda(g, CAMBIO_ESTADOS)}</td>
+      <td data-label="">${gestAcciones(g)}</td></tr>`).join("");
+  const cForm = !isOwner ? "" : `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>${edC ? "Editando cambio" : "Nuevo cambio de alcance"}</b> — trabajo que el cliente pidió por fuera de lo cotizado.</div>
+      <label>Descripción</label><textarea id="gc_desc" maxlength="1000" placeholder="Ej: Agregar 12 señales al HMI que no estaban en la oferta">${escH(edC ? edC.descripcion||"" : "")}</textarea>
+      <div class="row2">
+        <div><label>Solicitado por</label><input id="gc_sol" maxlength="100" value="${escH(edC ? edC.solicitadoPor||"" : "")}" placeholder="Nombre y cargo en el cliente"></div>
+        <div><label>Fecha</label><input type="date" id="gc_fecha" value="${escH(edC ? edC.fecha||"" : todayStr())}"></div>
+      </div>
+      <div class="row2">
+        <div><label>Horas adicionales estimadas</label><input type="number" id="gc_horas" min="0" step="0.5" value="${edC && edC.horas!=null ? escH(edC.horas) : ""}"></div>
+        <div><label>Estado</label><select id="gc_estado">${selOpts(CAMBIO_ESTADOS, edC ? edC.estado : "Pendiente de cobrar")}</select></div>
+      </div>
+      <div style="display:flex;gap:8px;margin-top:10px">
+        <button class="primary" data-act="gest-save" data-clase="cambio" data-proj="${escH(p.id)}" style="margin-top:0;flex:1">${edC ? "Guardar cambios" : "Agregar"}</button>
+        ${edC ? `<button class="secondary" data-act="gest-cancel" style="flex:1">Cancelar</button>` : ""}
+      </div></div>`;
+  const cRes = cs.length ? `${cs.length}${pend.length ? ` · ${pend.length} pendiente(s) de cobrar` : ""}${hTot ? ` · +${fmtN(hTot)} h` : ""}` : "ninguno";
+  // --- Bitácora ---
+  const ns = gestionDe(p, "nota");
+  const nList = ns.map(g=>`<div class="nota"><div class="nota-h"><b>${escH(g.fecha||"")}</b> · ${escH(g.creadoPor||"")}</div><div class="nota-t">${escH(g.descripcion||"")}</div></div>`).join("");
+  const nForm = !isOwner ? "" : `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>Nueva nota</b> — decisiones, acuerdos con el cliente, reuniones. Una nota guardada ya no se puede editar ni borrar.</div>
+      <div class="row2">
+        <div><label>Fecha</label><input type="date" id="gn_fecha" value="${todayStr()}"></div>
+        <div></div>
+      </div>
+      <label>Nota</label><textarea id="gn_desc" maxlength="2000" placeholder="Ej: Reunión con el cliente: se acuerda entregar la ingeniería de detalle el 15 de diciembre."></textarea>
+      <button class="primary" data-act="gest-save" data-clase="nota" data-proj="${escH(p.id)}" style="margin-top:10px">Agregar nota</button></div>`;
+  return cbFold("sec-riesgos-"+p.id, secTitulo("Riesgos y problemas", rRes), (rRows ? cbTable(["Tipo","Descripción","Impacto","Responsable","Fecha","Estado",""], rRows) : `<div class="hint">Sin riesgos ni problemas registrados.</div>`) + rForm)
+    + cbFold("sec-cambios-"+p.id, secTitulo("Cambios de alcance", cRes), (cRows ? cbTable(["Fecha","Descripción","Solicitado por","Horas adicionales","Estado",""], cRows) : `<div class="hint">Sin cambios de alcance registrados.</div>`) + cForm)
+    + cbFold("sec-bitacora-"+p.id, secTitulo("Bitácora", ns.length ? `${ns.length} nota(s) · última ${escH(ns[0].fecha||"")}` : "sin notas"), nForm + (nList || `<div class="hint" style="margin-top:8px">Sin notas todavía.</div>`));
+}
+// Guarda un riesgo/problema, un cambio de alcance o una nota de bitácora.
+async function saveGestion(clase, projId){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  const v = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+  let d;
+  if(clase==="riesgo") d = { tipo:v("gr_tipo")||"Riesgo", impacto:v("gr_impacto")||"Medio", descripcion:v("gr_desc"), accion:v("gr_accion"), responsable:v("gr_resp"), fecha:v("gr_fecha"), estado:v("gr_estado")||"Abierto" };
+  else if(clase==="cambio"){
+    const h = v("gc_horas");
+    d = { descripcion:v("gc_desc"), solicitadoPor:v("gc_sol"), fecha:v("gc_fecha"), horas: h==="" ? null : Number(h), estado:v("gc_estado")||"Pendiente de cobrar" };
+    if(d.horas!=null && (isNaN(d.horas) || d.horas < 0)){ showMsg("Las horas adicionales deben ser un número positivo.", "bad"); return; }
+  } else d = { descripcion:v("gn_desc"), fecha:v("gn_fecha") };
+  if(!d.descripcion){ showMsg(clase==="nota" ? "Escribe la nota." : "Escribe la descripción.", "bad"); return; }
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(d.fecha)){ showMsg("Elige la fecha.", "bad"); return; }
+  const editando = clase!=="nota" && gestEdit && gestEdit.clase===clase ? gestion.find(g=>g.id===gestEdit.id) : null;
+  try{
+    if(editando){
+      await db.doc("proyecto_gestion/"+editando.id).update({ ...d, updatedAt:new Date().toISOString(), actualizadoPor:authEmail });
+      gestEdit = null;
+      showMsg("Cambios guardados.", "ok");
+    } else {
+      await db.collection("proyecto_gestion").add({ proyId:p.id, codigo:p.codigo, clase, ...d, creadoPor:authEmail, createdAt:new Date().toISOString() });
+      showMsg(clase==="riesgo" ? `${d.tipo} agregado.` : clase==="cambio" ? "Cambio de alcance agregado." : "Nota agregada a la bitácora.", "ok");
+    }
+  }catch(err){ showMsg("No se pudo guardar (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
+}
+async function deleteGestion(id){
+  pendingConfirm = null;
+  const g = gestion.find(x=>x.id===id);
+  if(g && g.clase==="nota"){ showMsg("Las notas de la bitácora no se pueden borrar.", "bad"); render(); return; }
+  try{ await db.doc("proyecto_gestion/"+id).delete(); if(gestEdit && gestEdit.id===id) gestEdit = null; showMsg("Eliminado.", "ok"); }
+  catch(err){ showMsg("No se pudo eliminar: " + (err.message||err.code), "bad"); render(); }
+}
+async function updateGestionEstado(id, estado){
+  try{ await db.doc("proyecto_gestion/"+id).update({ estado, updatedAt:new Date().toISOString(), actualizadoPor:authEmail }); showMsg(`Estado: ${estado}.`, "ok"); }
+  catch(err){ showMsg("No se pudo cambiar el estado: " + (err.message||err.code), "bad"); render(); }
 }
 
 // ---------- Gestión: línea base, responsable y servicios en campo ----------
@@ -3012,7 +3175,7 @@ function stopCompData(){
   compUnsubs.forEach(u=>{ try{ u && u(); }catch(e){} });
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
-  costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; costosCargado = false; costosBorrador = {};
+  costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; gestion = []; gestEdit = null; costosCargado = false; costosBorrador = {};
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real lo que necesitan Compensatorios, Bonos, Costos, gastos y rentabilidad,
@@ -3041,6 +3204,10 @@ function subscribeCompData(){
   if(verCostos) compUnsubs.push(db.collection("costos").limit(500)
     .onSnapshot(snap=>{ const m = {}; let cfg = null; snap.docs.forEach(d=>{ if(d.id==="config") cfg = d.data(); else if(d.id.startsWith("ing_")) m[d.id.slice(4)] = d.data(); }); costosCfg = cfg; costosIng = m; costosCargado = true; rrCostos(); },
       err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
+  // Gestión de proyectos: riesgos y problemas, cambios de alcance y bitácora.
+  if(puede("gestion.ver")) compUnsubs.push(db.collection("proyecto_gestion").limit(5000)
+    .onSnapshot(snap=>{ gestion = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gestión de proyectos", snap.docs.length, 5000); if(view==="proyectos") render(); },
+      err=>showGlobalError("Riesgos, cambios y bitácora (revisa las reglas de Firestore)", err)));
   if(puede("gastos.ver")) compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
     .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gastos de proyectos", snap.docs.length, 5000); rrCostos(); },
       err=>showGlobalError("Gastos de proyectos (revisa las reglas de Firestore)", err)));
@@ -3436,6 +3603,9 @@ async function downloadWordReport(){
   al.pendPago.forEach(p=>riesgos.push(["Pendiente de pago", `${p.codigo} - ${p.nombre||p.cliente||""}`]));
   ar.margen.forEach(({p,x})=>riesgos.push([x.nivel==="bad" ? "Margen en riesgo" : "Margen bajo", `${p.codigo} - ${p.nombre||""}: margen ${x.pron ? "pronosticado al cierre" : "a la fecha"} ${Math.round(x.margenRef)}%`]));
   ar.avance.forEach(({p,x})=>riesgos.push(["Avance atrasado", `${p.codigo} - ${p.nombre||""}: ${Math.round(x.avance)}% de avance con ${Math.round(x.consPct)}% de las horas consumidas`]));
+  const ag = alertasGestion();
+  ag.riesgos.forEach(({g,codigo})=>riesgos.push([`${g.tipo||"Riesgo"} de impacto alto`, `${codigo}: ${g.descripcion||""}${g.responsable ? ` (responsable: ${g.responsable})` : ""}`]));
+  ag.cambios.forEach(({g,codigo})=>riesgos.push(["Cambio de alcance sin cobrar", `${codigo}: ${g.descripcion||""}${g.horas ? ` (+${fmtN(g.horas)} h)` : ""}`]));
   if(al.ordAbiertas) riesgos.push(["Órdenes abiertas", `${al.ordAbiertas} orden(es) de contratos vigentes por ejecutar`]);
   body += riesgos.length ? wTable(["Tipo","Detalle"], [2300,7780], riesgos) : wp("Sin riesgos ni alertas en el periodo.", {italics:true, color:"6B7280"});
 
@@ -3567,7 +3737,7 @@ async function downloadExcelMes(){
 // ---------- Copia de seguridad (solo propietario) ----------
 // Colecciones de la base de datos que se copian. Si se agrega una colección nueva a la app, se agrega aquí.
 const COLECCIONES_COPIA = ["activities","config_engineers","config_projects","config","comp_ajustes","campo_pagos","comp_saldos",
-  "costos","proyecto_gastos","proyecto_finanzas","usuarios","historial"];
+  "costos","proyecto_gastos","proyecto_finanzas","proyecto_gestion","usuarios","historial"];
 // Convierte lo que devuelve Firestore a datos simples (las fechas tipo Timestamp pasan a texto ISO).
 function aDatoPlano(v){
   if(v && typeof v.toDate === "function") return v.toDate().toISOString();
