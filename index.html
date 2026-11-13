@@ -683,6 +683,7 @@ const CAP_ACCION = {
   "costos-save":"costos.editar", "rent-save":"costos.editar", "gasto-save":"gastos.crear",
   "cb-trat":"comp.editar", "cb-dom-pago":"comp.editar", "cb-bono-pago":"comp.editar", "cb-saldo-pago":"comp.editar", "cb-save-saldo":"comp.editar",
   "ask-cierre":"admin", "confirm-cierre":"admin", "hist-reload":"admin",
+  "cierre-save":"admin", "cierre-cifras":"admin", "ask-cierre-del":"admin", "confirm-cierre-del":"admin",
   "gest-save":"admin", "gest-edit":"admin", "ask-del-gest":"admin", "confirm-del-gest":"admin",
   "usr-new":"admin", "usr-edit":"admin", "usr-save":"admin", "usr-resend":"admin", "ask-usr-remove":"admin", "confirm-usr-remove":"admin"
 };
@@ -1396,6 +1397,10 @@ async function ejecutarAccion(act, ds){
   if(act === "costos-save"){ await saveCostos(); return; }
   if(act === "gasto-save"){ await saveGasto(ds.proj); return; }
   if(act === "rent-save"){ await saveRentab(ds.proj); return; }
+  if(act === "cierre-save"){ await saveCierre(ds.proj, false); return; }
+  if(act === "cierre-cifras"){ await saveCierre(ds.proj, true); return; }
+  if(act === "ask-cierre-del"){ pendingConfirm = {type:"reabrirCierre", key: ds.proj}; render(); return; }
+  if(act === "confirm-cierre-del"){ await deleteCierre(ds.proj); return; }
   if(act === "gest-save"){ await saveGestion(ds.clase, ds.proj); return; }
   if(act === "gest-edit"){ const g = gestion.find(x=>x.id===ds.id); if(g){ gestEdit = { clase:g.clase, id:g.id }; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById(g.clase==="riesgo" ? "gr_desc" : "gc_desc"); if(el) el.focus(); } return; }
   if(act === "gest-cancel"){ gestEdit = null; render(); return; }
@@ -1605,6 +1610,8 @@ const ESTADOS_PROY_DESC = {
 const ESTADOS_PROY_ACTIVOS = ["Por ejecutar","En ejecución","Pendiente","Bloqueado","Contrato vigente"];
 const ESTADO_PROY_BADGE = {"Por ejecutar":"b-pend","En ejecución":"b-curso","Pendiente":"b-pend","Bloqueado":"b-bloq","Contrato vigente":"b-comp","Ejecutado pendiente de pago":"b-extra","Cerrado":"b-gris"};
 const DOC_TIPOS = ["OC","OS","Contrato","Otro"];
+// Clase de trabajo: agrupa proyectos parecidos para comparar lo cotizado con lo real (base para cotizar).
+const CLASES_TRABAJO = ["Ingeniería","Migración","Puesta en marcha","Mantenimiento","Servicio en campo","Soporte remoto","Suministro e instalación","Capacitación","Otro"];
 const ESTADOS_ORDEN = ["Solicitada","Programada","En ejecución","Ejecutada pendiente de pago","Cerrada","Cancelada"];
 const ORDEN_ABIERTA = ["Solicitada","Programada","En ejecución"];
 const DIAS_AVISO_VENCIMIENTO = 60;
@@ -1726,6 +1733,8 @@ function renderProjDetalle(){
       <div><label>Tipo</label><select id="pf_tipo" ${isNew?"":"disabled"}>${TIPOS_PROY.map(t=>`<option value="${t}" ${t===tipoProy(p)?"selected":""}>${t} (${TIPO_PROY_DESC[t]})</option>`).join("")}</select></div>
       <div><label>Número ${isNew?'<span class="hint">(automático, puedes cambiarlo)</span>':''}</label><input id="pf_codigo" value="${escH(p.codigo)}" data-auto="1" ${isNew?"":"disabled"}></div>
     </div>
+    <label>Clase de trabajo <span class="hint">(para comparar proyectos parecidos al cotizar)</span></label>
+    <select id="pf_clase"><option value="">— Sin clasificar —</option>${selOpts(CLASES_TRABAJO.concat(p.clase && !CLASES_TRABAJO.includes(p.clase) ? [p.clase] : []), p.clase||"")}</select>
     <div class="row2">
       <div><label>Cliente</label><input id="pf_cliente" list="pf_clientes" value="${escH(p.cliente||"")}" placeholder="Ej: ECOPETROL"><datalist id="pf_clientes">${clientes.map(c=>`<option value="${escH(c)}">`).join("")}</datalist></div>
       <div><label>Año</label><input type="number" id="pf_anio" value="${p.anio||""}" min="2000" max="2100"></div>
@@ -1758,8 +1767,6 @@ function renderProjDetalle(){
     </div>
     <label>Equipo asignado <span class="hint">(además del líder)</span></label>
     <div class="chips">${engineerNames().concat((p.equipo||[]).filter(n=>!engineerNames().includes(n))).map(n=>`<label class="chip" data-eq="${escH(n)}" ${n===p.lider?'style="display:none"':""}><input type="checkbox" class="pf_eq" value="${escH(n)}" ${(p.equipo||[]).includes(n)?"checked":""}> ${escH(n)}</label>`).join("") || `<span class="hint">No hay ingenieros en el Equipo.</span>`}</div>
-    <label>Notas y seguimiento <span class="hint">(pagos pendientes, novedades, contactos…)</span></label>
-    <textarea id="pf_notas">${escH(p.notas||"")}</textarea>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
       <button class="primary" data-act="proj-save" style="margin-top:0;flex:1 1 160px">${isNew?"Crear proyecto":"Guardar cambios"}</button>
       ${isNew ? "" : confirmingDel
@@ -1800,7 +1807,7 @@ function renderSeccionesProyecto(p){
     const res = !x ? "sin valor vendido" : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : `margen ${fmtPct(x.margenRef)}${x.pron ? " al cierre" : " a la fecha"}`;
     out += cbFold("sec-rent-"+p.id, secTitulo("Rentabilidad", res), renderProjRentab(p));
   }
-  if(puede("gestion.ver")) out += renderGestion(p);
+  if(puede("gestion.ver")) out += renderGestion(p) + renderCierreProyecto(p);
   return out;
 }
 
@@ -1909,6 +1916,182 @@ function renderGestion(p){
     + cbFold("sec-cambios-"+p.id, secTitulo("Cambios de alcance", cRes), (cRows ? cbTable(["Fecha","Descripción","Solicitado por","Horas adicionales","Estado",""], cRows) : `<div class="hint">Sin cambios de alcance registrados.</div>`) + cForm)
     + cbFold("sec-bitacora-"+p.id, secTitulo("Bitácora", ns.length ? `${ns.length} nota(s) · última ${escH(ns[0].fecha||"")}` : "sin notas"), nForm + (nList || `<div class="hint" style="margin-top:8px">Sin notas todavía.</div>`));
 }
+// ---------- Cierre formal del proyecto y base para cotizar ----------
+// Documento proyecto_gestion/cierre_<id del proyecto> {clase:"cierre", fecha, cifras:{…cotizado y real al cerrar},
+// bien, mal, recomendacion, causa, causaDetalle, satisfaccion, satisfaccionNota, claseTrabajo, tipo}.
+const CAUSAS_DESVIACION = ["Sin desviación relevante","Alcance mal estimado en la oferta","Cambios pedidos por el cliente","Reprocesos o errores propios",
+  "Esperas o demoras del cliente","Logística y desplazamientos","Problemas técnicos o de equipos","Curva de aprendizaje","Otra"];
+const ESTADOS_TRAS_CIERRE = ["Cerrado","Ejecutado pendiente de pago"];
+function cierreDe(p){ return gestion.find(g=>g.clase==="cierre" && g.proyId===p.id) || null; }
+// Cifras cotizado vs. real con los datos de hoy. Devuelve {cargando:true} si las horas aún no llegan.
+function cifrasCierre(p){
+  const h = projHoras[p.id];
+  if(!h || h.loading) return { cargando:true };
+  if(h.error) return { error:h.error };
+  // Sin salarios registrados el costo real no es confiable (solo tendría gastos y bono): no se compara costo ni margen.
+  const conCostos = puede("costos.ver") && hayCostos();
+  const pres = presupuestoHoras(p), x = puede("costos.ver") ? rentabilidadDe(p) : null, c = conCostos ? costoProyecto(p) : null;
+  const xr = x && !x.sinTrm && !x.cargando && !x.error ? x : null;
+  return { horasCotizadas: pres ? pres.base : null, horasCambios: pres ? pres.cambios : horasCambiosCobrados(p), horasPresupuesto: pres ? pres.horas : null, horasReales: h.total,
+    costoCotizado: xr ? xr.costoOferta : null, costoReal: c && !c.cargando && !c.error ? c.total : null,
+    venta: xr ? xr.venta : null, margenCotizadoPct: xr ? xr.margenOfertaPct : null, margenRealPct: xr && conCostos ? xr.margenPct : null, sinSalarios: puede("costos.ver") && !hayCostos(),
+    diasVendidos: (p.ordenes||[]).filter(o=>o.estado!=="Cancelada").reduce((a,o)=>a+(Number(o.dias)||0), 0) || null,
+    diasEjecutados: (p.ordenes||[]).reduce((a,o)=>a+(diasEjecutados(p,o)||0), 0) || null };
+}
+// Desviación en % de lo real frente a lo cotizado (null si falta alguno).
+function desvPct(real, cot){ return real!=null && cot!=null && cot > 0 ? (real - cot) / cot * 100 : null; }
+function fmtDesv(v){ return v==null ? "—" : (v > 0 ? "+" : "") + Math.round(v) + " %"; }
+// Tabla "cotizado vs. real" del cierre.
+function tablaCierre(f){
+  const fila = (n, cot, real, fmt, masEsPeor)=>{
+    if(cot==null && real==null) return "";
+    const d = desvPct(real, cot);
+    const mal = d!=null && Math.abs(d) >= 10 && (masEsPeor ? d > 0 : d < 0);
+    return `<tr><td data-label="Concepto"><b>${n}</b></td><td data-label="Cotizado">${cot!=null ? fmt(cot) : "—"}</td><td data-label="Real">${real!=null ? fmt(real) : "—"}</td>
+      <td data-label="Desviación">${d!=null ? `<span class="badge ${mal ? "b-bloq" : "b-comp"}">${fmtDesv(d)}</span>` : "—"}</td></tr>`;
+  };
+  const hh = v=>fmtN(v)+" h", dd = v=>fmtN(v)+" d";
+  const filas = fila(`Horas${f.horasCambios ? ` <span class="hint">(oferta ${fmtN(f.horasCotizadas)} h + ${fmtN(f.horasCambios)} h de cambios cobrados)</span>` : ""}`, f.horasPresupuesto, f.horasReales, hh, true)
+    + fila("Días en campo", f.diasVendidos, f.diasEjecutados, dd, true)
+    + fila("Costo", f.costoCotizado, f.costoReal, fmtCOP, true)
+    + (f.margenCotizadoPct!=null || f.margenRealPct!=null ? `<tr><td data-label="Concepto"><b>Margen</b></td><td data-label="Cotizado">${fmtPct(f.margenCotizadoPct)}</td><td data-label="Real">${fmtPct(f.margenRealPct)}</td>
+        <td data-label="Desviación">${f.margenCotizadoPct!=null && f.margenRealPct!=null ? `<span class="badge ${f.margenRealPct < f.margenCotizadoPct - 5 ? "b-bloq" : "b-comp"}">${f.margenRealPct >= f.margenCotizadoPct ? "+" : ""}${Math.round(f.margenRealPct - f.margenCotizadoPct)} puntos</span>` : "—"}</td></tr>` : "");
+  return filas ? cbTable(["Concepto","Cotizado","Real","Desviación"], filas) : `<div class="hint">Este proyecto no tiene presupuesto, valor vendido ni días vendidos para comparar.</div>`;
+}
+function renderCierreProyecto(p){
+  const ci = cierreDe(p);
+  const vivo = cifrasCierre(p);
+  const f = ci ? (ci.cifras||{}) : vivo;
+  const listo = !f.cargando && !f.error;
+  const dH = listo ? desvPct(f.horasReales, f.horasPresupuesto) : null;
+  const resumen = ci ? `cerrado el ${escH(ci.fecha||"")}${dH!=null ? ` · horas ${fmtDesv(dH)}` : ""}${f.margenRealPct!=null ? ` · margen ${fmtPct(f.margenRealPct)}` : ""}` : "sin cerrar";
+  const confirming = pendingConfirm && pendingConfirm.type==="reabrirCierre" && pendingConfirm.key===p.id;
+  const estrellas = n=> n ? "★".repeat(n) + "☆".repeat(5-n) : "—";
+  let inner = !listo ? `<div class="hint">${f.error ? "No se pudieron cargar las horas: "+escH(f.error) : "Cargando las horas del proyecto…"}</div>`
+    : `<div class="hint" style="margin-bottom:6px">${ci ? `Cifras guardadas al cerrar (${escH(ci.fecha||"")}).` : "Cifras con los datos de hoy; quedan guardadas al cerrar el proyecto."}${conLineaBase(p) ? "" : " Este proyecto no tiene línea base: no entra en la base para cotizar."}${f.sinSalarios ? " No hay salarios registrados (☰ → Costos), así que el costo y el margen reales no se calculan." : ""}</div>${tablaCierre(f)}`;
+  if(!isOwner){
+    if(ci) inner += `<div class="pcons" style="margin-top:10px">
+        <div class="hint"><b>Causa de la desviación:</b> ${escH(ci.causa||"—")}${ci.causaDetalle ? " — "+escH(ci.causaDetalle) : ""}</div>
+        <div class="hint"><b>Qué salió bien:</b> ${escH(ci.bien||"—")}</div><div class="hint"><b>Qué salió mal:</b> ${escH(ci.mal||"—")}</div>
+        <div class="hint"><b>Recomendación para la próxima oferta:</b> ${escH(ci.recomendacion||"—")}</div>
+        <div class="hint"><b>Satisfacción del cliente:</b> ${estrellas(Number(ci.satisfaccion)||0)}${ci.satisfaccionNota ? " — "+escH(ci.satisfaccionNota) : ""}</div></div>`;
+  } else if(listo){
+    const v = ci || {};
+    inner += `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>${ci ? "Cierre del proyecto" : "Cerrar el proyecto"}</b> — lo que se aprende aquí alimenta la base para cotizar (en Informes).</div>
+      <div class="row2">
+        <div><label>Fecha de cierre</label><input type="date" id="ci_fecha" value="${escH(v.fecha || todayStr())}"></div>
+        <div><label>Estado del proyecto al cerrar</label><select id="ci_estado">${selOpts(ESTADOS_TRAS_CIERRE, ESTADOS_TRAS_CIERRE.includes(estadoProy(p)) ? estadoProy(p) : "Cerrado")}</select></div>
+      </div>
+      <div class="row2">
+        <div><label>Causa principal de la desviación</label><select id="ci_causa">${selOpts(CAUSAS_DESVIACION, v.causa || CAUSAS_DESVIACION[0])}</select></div>
+        <div><label>Detalle de la causa <span class="hint">(opcional)</span></label><input id="ci_causa_det" maxlength="300" value="${escH(v.causaDetalle||"")}"></div>
+      </div>
+      <label>Qué salió bien</label><textarea id="ci_bien" maxlength="1500">${escH(v.bien||"")}</textarea>
+      <label>Qué salió mal</label><textarea id="ci_mal" maxlength="1500">${escH(v.mal||"")}</textarea>
+      <label>Recomendación para la próxima oferta de este tipo</label><textarea id="ci_rec" maxlength="1500" placeholder="Ej: cotizar 20 % más de horas de pruebas en sitio">${escH(v.recomendacion||"")}</textarea>
+      <div class="row2">
+        <div><label>Satisfacción del cliente</label><select id="ci_sat"><option value="">— Sin calificar —</option>${[5,4,3,2,1].map(n=>`<option value="${n}" ${Number(v.satisfaccion)===n?"selected":""}>${n} — ${["","Muy insatisfecho","Insatisfecho","Neutral","Satisfecho","Muy satisfecho"][n]}</option>`).join("")}</select></div>
+        <div><label>Comentario del cliente <span class="hint">(opcional)</span></label><input id="ci_sat_nota" maxlength="300" value="${escH(v.satisfaccionNota||"")}"></div>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px;align-items:center">
+        <button class="primary" data-act="cierre-save" data-proj="${escH(p.id)}" style="margin-top:0;flex:1 1 200px">${ci ? "Guardar cambios del cierre" : "Cerrar proyecto y guardar cifras"}</button>
+        ${ci ? `<button class="secondary" data-act="cierre-cifras" data-proj="${escH(p.id)}" style="flex:0 1 auto;width:auto" title="Vuelve a calcular las cifras con los datos de hoy">Actualizar cifras</button>
+          ${confirming ? `<span class="confirmrow">¿Quitar el cierre? Se borran sus lecciones. <button class="tiny bad" data-act="confirm-cierre-del" data-proj="${escH(p.id)}">Sí, quitar</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
+                       : `<button class="tiny bad" data-act="ask-cierre-del" data-proj="${escH(p.id)}">Quitar cierre</button>`}` : ""}
+      </div></div>`;
+  }
+  return cbFold("sec-cierre-"+p.id, secTitulo("Cierre del proyecto", resumen), inner);
+}
+// Guarda el cierre. La primera vez congela las cifras; después solo cambia los textos (salvo "Actualizar cifras").
+async function saveCierre(projId, soloCifras){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  const v = id=>{ const el = document.getElementById(id); return el ? el.value.trim() : ""; };
+  const previo = cierreDe(p);
+  let cifras = previo ? previo.cifras : null;
+  if(!previo || soloCifras){
+    const c = cifrasCierre(p);
+    if(c.cargando || c.error){ showMsg("Espera a que carguen las horas del proyecto para guardar las cifras.", "bad"); return; }
+    cifras = c;
+  }
+  const fecha = v("ci_fecha");
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(fecha)){ showMsg("Elige la fecha de cierre.", "bad"); return; }
+  const sat = v("ci_sat");
+  const d = { proyId:p.id, codigo:p.codigo, clase:"cierre", fecha, cifras, causa:v("ci_causa"), causaDetalle:v("ci_causa_det"), bien:v("ci_bien"), mal:v("ci_mal"), recomendacion:v("ci_rec"),
+    satisfaccion: sat ? Number(sat) : null, satisfaccionNota:v("ci_sat_nota"), claseTrabajo:p.clase||"", tipo:tipoProy(p), nombre:p.nombre||"", cliente:p.cliente||"",
+    creadoPor: previo ? previo.creadoPor : authEmail, createdAt: previo ? previo.createdAt : new Date().toISOString(), updatedAt:new Date().toISOString() };
+  const nuevoEstado = v("ci_estado");
+  try{
+    await db.doc("proyecto_gestion/cierre_"+p.id).set(JSON.parse(JSON.stringify(d)));   // sin valores indefinidos (Firestore no los acepta)
+    if(!soloCifras && ESTADOS_TRAS_CIERRE.includes(nuevoEstado) && estadoProy(p)!==nuevoEstado) await db.doc("config_projects/"+p.id).update({ estado:nuevoEstado, updatedAt:new Date().toISOString() });
+    showMsg(soloCifras ? "Cifras del cierre actualizadas con los datos de hoy." : previo ? "Cierre guardado." : `Proyecto cerrado (estado: ${nuevoEstado}). Las cifras quedaron guardadas.`, "ok");
+  }catch(err){ showMsg("No se pudo guardar el cierre (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
+}
+async function deleteCierre(projId){
+  pendingConfirm = null;
+  try{ await db.doc("proyecto_gestion/cierre_"+projId).delete(); showMsg("Se quitó el cierre. El estado del proyecto no cambió: ajústalo en la ficha si hace falta.", "ok"); }
+  catch(err){ showMsg("No se pudo quitar el cierre: " + (err.message||err.code), "bad"); render(); }
+}
+// Base para cotizar: proyectos cerrados (con línea base) agrupados por clase de trabajo.
+function baseCotizar(){
+  const cierres = gestion.filter(g=>g.clase==="cierre").map(ci=>({ ci, p: projectsList.find(x=>x.id===ci.proyId) })).filter(x=>x.p);
+  const validos = cierres.filter(x=>conLineaBase(x.p));
+  const grupos = {};
+  validos.forEach(({ci,p})=>{ const k = p.clase || ci.claseTrabajo || "Sin clasificar"; (grupos[k] = grupos[k] || []).push({ ci, p }); });
+  const prom = l=> l.length ? l.reduce((a,b)=>a+b,0)/l.length : null;
+  const filas = Object.keys(grupos).sort().map(k=>{
+    const g = grupos[k];
+    const dh = g.map(({ci})=>desvPct((ci.cifras||{}).horasReales, (ci.cifras||{}).horasPresupuesto)).filter(v=>v!=null);
+    const dc = g.map(({ci})=>desvPct((ci.cifras||{}).costoReal, (ci.cifras||{}).costoCotizado)).filter(v=>v!=null);
+    const mg = g.map(({ci})=>(ci.cifras||{}).margenRealPct).filter(v=>v!=null);
+    const sat = g.map(({ci})=>Number(ci.satisfaccion)||0).filter(v=>v>0);
+    const causas = {}; g.forEach(({ci})=>{ if(ci.causa && ci.causa!==CAUSAS_DESVIACION[0]) causas[ci.causa] = (causas[ci.causa]||0) + 1; });
+    const top = Object.entries(causas).sort((a,b)=>b[1]-a[1])[0];
+    return { clase:k, n:g.length, desvHoras:prom(dh), desvCosto:prom(dc), margen:prom(mg), satisfaccion:prom(sat), causa: top ? `${top[0]} (${top[1]})` : "—", items:g };
+  });
+  return { filas, total:validos.length, sinBase:cierres.length - validos.length };
+}
+// Tarjeta "Base para cotizar" de Informes: plegada; solo se arma con los proyectos que ya tienen cierre.
+function renderInfBaseCotizar(){
+  const b = baseCotizar();
+  const verCostos = puede("costos.ver");
+  const rows = b.filas.map(f=>`<tr><td data-label="Clase de trabajo"><b>${escH(f.clase)}</b></td><td data-label="Proyectos">${f.n}</td>
+      <td data-label="Desviación de horas">${f.desvHoras!=null ? `<span class="badge ${f.desvHoras >= 10 ? "b-bloq" : "b-comp"}">${fmtDesv(f.desvHoras)}</span>` : "—"}</td>
+      ${verCostos ? `<td data-label="Desviación de costo">${fmtDesv(f.desvCosto)}</td><td data-label="Margen real">${fmtPct(f.margen)}</td>` : ""}
+      <td data-label="Causa más frecuente">${escH(f.causa)}</td>
+      <td data-label="Satisfacción">${f.satisfaccion!=null ? (Math.round(f.satisfaccion*10)/10)+" / 5" : "—"}</td></tr>`).join("");
+  const detalle = b.filas.map(f=>f.items.map(({ci,p})=>{ const c = ci.cifras||{};
+      return `<tr class="prow" data-act="inf-proj" data-id="${escH(p.id)}"><td data-label="Proyecto"><b>${escH(p.codigo)}</b> ${escH(p.nombre||"")}<div class="hint">${escH(f.clase)} · cerrado ${escH(ci.fecha||"")}</div></td>
+        <td data-label="Horas cotizadas / reales">${c.horasPresupuesto!=null ? fmtN(c.horasPresupuesto) : "—"} / ${c.horasReales!=null ? fmtN(c.horasReales) : "—"} h <span class="hint">${fmtDesv(desvPct(c.horasReales, c.horasPresupuesto))}</span></td>
+        <td data-label="Causa">${escH(ci.causa||"—")}</td>
+        <td data-label="Recomendación para cotizar">${escH(ci.recomendacion||"—")}</td></tr>`; }).join("")).join("");
+  const inner = !b.total ? `<div class="empty">Todavía no hay proyectos cerrados${b.sinBase ? " con línea base" : ""}. Cuando cierres un proyecto desde su ficha (sección "Cierre del proyecto"), aparecerá aquí.</div>`
+    : `<div class="hint" style="margin-bottom:6px">Desviación = cuánto se pasó (+) o sobró (−) lo real frente a lo cotizado, en promedio. Úsala como colchón al cotizar trabajos de la misma clase.</div>
+      ${cbTable(["Clase de trabajo","Proyectos","Desviación de horas"].concat(verCostos ? ["Desviación de costo","Margen real"] : [], ["Causa más frecuente","Satisfacción"]), rows)}
+      <h4 class="cbh">Proyectos cerrados y sus recomendaciones</h4>
+      ${cbTable(["Proyecto","Horas cotizadas / reales","Causa","Recomendación para cotizar"], detalle)}
+      ${b.sinBase ? `<div class="hint" style="margin-top:8px">${b.sinBase} proyecto(s) cerrado(s) sin línea base no se incluyen.</div>` : ""}`;
+  return `<div class="card">${cbFold("inf-basecot", secTitulo("Base para cotizar", b.total ? `${b.total} proyecto(s) cerrado(s) en ${b.filas.length} clase(s) de trabajo` : "sin proyectos cerrados"), inner)}</div>`;
+}
+
+// ---------- Notas anteriores → bitácora ----------
+// El campo "Notas y seguimiento" de la ficha se reemplazó por la bitácora. Una sola vez, al entrar el propietario,
+// lo que cada proyecto tenía escrito ahí se copia a su bitácora como una nota marcada. El texto original no se borra.
+let gestionCargada = false, notasMigradas = false;
+async function migrarNotasABitacora(){
+  if(notasMigradas || !gestionCargada || !projectsList.length || authEmail !== PROPIETARIO) return;
+  notasMigradas = true;
+  const ya = new Set(gestion.map(g=>g.id));
+  for(const p of projectsList){
+    const texto = String(p.notas||"").trim();
+    if(!texto || ya.has("notaprev_"+p.id)) continue;
+    try{
+      await db.doc("proyecto_gestion/notaprev_"+p.id).set({ proyId:p.id, codigo:p.codigo, clase:"nota", fecha:todayStr(),
+        descripcion:"Nota anterior a la bitácora: " + texto.slice(0,1900), creadoPor:authEmail, createdAt:new Date().toISOString(), migrada:true });
+    }catch(err){ console.error("Nota anterior de " + p.codigo, err); }
+  }
+}
+
 // Guarda un riesgo/problema, un cambio de alcance o una nota de bitácora.
 async function saveGestion(clase, projId){
   const p = projectsList.find(x=>x.id===projId); if(!p) return;
@@ -2092,15 +2275,18 @@ async function loadProjHoras(p, silent){
 const PRES_ALERTA_PCT = 80;
 // Presupuesto de horas del proyecto. En contratos vigentes es la suma de sus órdenes (días × 8.5 h, sin las canceladas);
 // en lo demás, lo que viene en la oferta, escrito en horas o en días.
+// A ese valor se le suman las horas de los cambios de alcance en estado "Cobrado" (trabajo adicional que sí se vendió).
 function presupuestoHoras(p){
+  const extra = horasCambiosCobrados(p);
   if(estadoProy(p)==="Contrato vigente"){
     const h = (p.ordenes||[]).filter(o=>o.estado!=="Cancelada").reduce((a,o)=>a+(Number(o.dias)||0)*MAX_HORAS, 0);
-    if(h > 0) return { horas:h, fuente:"órdenes" };
+    if(h > 0) return { horas:h+extra, base:h, cambios:extra, fuente:"órdenes" };
   }
   const v = Number(p.presupuestoValor)||0;
-  if(v > 0) return { horas: p.presupuestoUnidad==="d" ? v*MAX_HORAS : v, fuente:"oferta" };
+  if(v > 0){ const h = p.presupuestoUnidad==="d" ? v*MAX_HORAS : v; return { horas:h+extra, base:h, cambios:extra, fuente:"oferta" }; }
   return null;
 }
+function horasCambiosCobrados(p){ return gestion.filter(g=>g.proyId===p.id && g.clase==="cambio" && g.estado==="Cobrado").reduce((a,g)=>a+(Number(g.horas)||0), 0); }
 // Consumo de horas contra presupuesto: null si no tiene presupuesto; {cargando} mientras llegan las horas.
 function consumoDe(p){
   const pres = presupuestoHoras(p);
@@ -2131,7 +2317,7 @@ function consumoBarra(p){
   return `<div class="pcons">
       <div class="pcons-top"><b>Consumo: ${fmtN(c.horas)} de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)} %)</b><span class="badge ${NIVEL_BADGE[c.nivel]}">${NIVEL_TXT[c.nivel]}</span></div>
       <div class="pbar"><div class="pbar-in ${c.nivel}" style="width:${ancho}%"></div></div>
-      <div class="hint">${c.disponible >= 0 ? `Quedan ${fmtN(c.disponible)} h (${fmtN(c.disponible/MAX_HORAS)} días)` : `Se pasó por ${fmtN(-c.disponible)} h (${fmtN(-c.disponible/MAX_HORAS)} días)`} · Presupuesto ${c.pres.fuente==="órdenes" ? "= suma de las órdenes del contrato" : "de la oferta"}</div>
+      <div class="hint">${c.disponible >= 0 ? `Quedan ${fmtN(c.disponible)} h (${fmtN(c.disponible/MAX_HORAS)} días)` : `Se pasó por ${fmtN(-c.disponible)} h (${fmtN(-c.disponible/MAX_HORAS)} días)`} · Presupuesto ${c.pres.fuente==="órdenes" ? "= suma de las órdenes del contrato" : "de la oferta"}${c.pres.cambios ? ` (${fmtN(c.pres.base)} h) + ${fmtN(c.pres.cambios)} h de cambios de alcance cobrados` : ""}</div>
     </div>`;
 }
 // Carga las horas acumuladas de los proyectos con presupuesto o valor vendido (las que falten, o todas si force).
@@ -2235,7 +2421,8 @@ function renderInformes(){
       : `<div class="empty">Ningún proyecto tiene presupuesto todavía. Escríbelo en la pestaña Proyectos (dato de la transferencia de oferta).</div>`}
     ${sinPres.length && lista.length ? `<div class="hint" style="margin-top:8px">Proyectos activos sin presupuesto: ${sinPres.map(p=>escH(p.codigo)).join(", ")}.</div>` : ""}
   </div>
-  ${puede("costos.ver") ? renderInfRentab() : ""}`;
+  ${puede("costos.ver") ? renderInfRentab() : ""}
+  ${puede("gestion.ver") ? renderInfBaseCotizar() : ""}`;
 }
 // Tarjeta "Rentabilidad de proyectos" de la pestaña Informes.
 function renderInfRentab(){
@@ -2613,7 +2800,7 @@ function leerProjForm(){
   const v = id=>{ const el=document.getElementById(id); return el ? el.value.trim() : ""; };
   return { tipo:v("pf_tipo"), codigo:v("pf_codigo"), cliente:v("pf_cliente"), anio: v("pf_anio") ? Number(v("pf_anio")) : null,
     nombre:v("pf_nombre"), objeto:v("pf_objeto"), docTipo:v("pf_doctipo"), documento:v("pf_documento"),
-    estado:v("pf_estado"), fechaInicio:v("pf_inicio"), fechaFin:v("pf_fin"), notas:v("pf_notas"),
+    estado:v("pf_estado"), fechaInicio:v("pf_inicio"), fechaFin:v("pf_fin"), clase:v("pf_clase"),
     presupuestoValor: v("pf_pres") ? Number(v("pf_pres")) : null, presupuestoUnidad: v("pf_pres_u") || "h",
     lider: v("pf_lider"), lineaBase: v("pf_lb"), equipo: [...document.querySelectorAll(".pf_eq")].filter(x=>x.checked).map(x=>x.value) };
 }
@@ -3175,7 +3362,7 @@ function stopCompData(){
   compUnsubs.forEach(u=>{ try{ u && u(); }catch(e){} });
   compUnsubs = [];
   compEntries = []; campoEntries = []; compAjustes = {}; campoPagos = {}; compSaldos = {};
-  costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; gestion = []; gestEdit = null; costosCargado = false; costosBorrador = {};
+  costosCfg = null; costosIng = {}; gastos = []; finanzas = {}; gestion = []; gestEdit = null; gestionCargada = false; notasMigradas = false; costosCargado = false; costosBorrador = {};
   compLoaded = {comp:false, campo:false};
 }
 // Escucha en tiempo real lo que necesitan Compensatorios, Bonos, Costos, gastos y rentabilidad,
@@ -3206,7 +3393,7 @@ function subscribeCompData(){
       err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
   // Gestión de proyectos: riesgos y problemas, cambios de alcance y bitácora.
   if(puede("gestion.ver")) compUnsubs.push(db.collection("proyecto_gestion").limit(5000)
-    .onSnapshot(snap=>{ gestion = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gestión de proyectos", snap.docs.length, 5000); if(view==="proyectos") render(); },
+    .onSnapshot(snap=>{ gestion = snap.docs.map(d=>({ id:d.id, ...d.data() })); gestionCargada = true; revisarLimite("Gestión de proyectos", snap.docs.length, 5000); migrarNotasABitacora(); if(view==="proyectos" || view==="informes") render(); },
       err=>showGlobalError("Riesgos, cambios y bitácora (revisa las reglas de Firestore)", err)));
   if(puede("gastos.ver")) compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
     .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gastos de proyectos", snap.docs.length, 5000); rrCostos(); },
@@ -3391,6 +3578,7 @@ function subscribeProjects(){
   if(!db) return;
   unsubProj = db.collection("config_projects").orderBy("codigo").onSnapshot(snap=>{
     projectsList = snap.docs.map(d=>({ id:d.id, ...d.data() }));
+    migrarNotasABitacora();
     if(view==="form" || view==="proyectos" || view==="informes") render();
     if(view==="proyectos" || view==="informes") loadConsumoProyectos();
   }, err=>showGlobalError("Proyectos", err));
