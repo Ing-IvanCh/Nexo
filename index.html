@@ -245,20 +245,22 @@ h1{font-size:28px;font-weight:700;letter-spacing:-0.015em;color:var(--text);marg
 /* Pantalla de inicio de sesión */
 .loginwrap{min-height:80vh;display:flex;align-items:center;justify-content:center;padding:16px 0}
 .logincard{width:100%;max-width:400px}
-/* Marca Nexo: símbolo (nodo central conectado con tres) + nombre. Los colores cambian solos en modo oscuro. */
-.nexo{display:inline-flex;align-items:center;gap:10px;--nx1:#1B3A7A;--nx2:#22B1E6;--nx3:#2D6CC0;--nxh:#fff;color:#16306b}
+/* Marca Nexo: símbolo (nodo central conectado con tres) + nombre, con un degradado continuo
+   de azul oscuro a celeste (los mismos tonos del logo de Process Solutions). En modo oscuro se aclara. */
+.nexo{display:inline-flex;align-items:center;gap:10px;--nxa:#16306b;--nxb:#2460b8;--nxc:#19aee8;--nxh:#fff}
 .nexo svg{width:40px;height:40px;flex:none}
-.nexo .nexo-wm{font-size:30px;font-weight:700;letter-spacing:-0.035em;line-height:1}
+.nexo .nexo-wm{font-size:30px;font-weight:700;letter-spacing:-0.035em;line-height:1.1;padding-right:2px;
+  background:linear-gradient(90deg,var(--nxa),var(--nxb) 55%,var(--nxc));-webkit-background-clip:text;background-clip:text;color:transparent}
 .nexo.grande{flex-direction:column;gap:6px}
 .nexo.grande svg{width:72px;height:72px}
 .nexo.grande .nexo-wm{font-size:38px}
-@media(prefers-color-scheme:dark){ .nexo{--nx1:#fff;--nx2:#5fd0f5;--nx3:#bfe9fb;--nxh:#101b36;color:#fff} }
+@media(prefers-color-scheme:dark){ .nexo{--nxa:#4f8df0;--nxb:#3aa5f2;--nxc:#35cbf7;--nxh:#0b1220} }
 .loginlogo{text-align:center;margin:6px 0 4px}
 /* Encabezado: Nexo a la izquierda, Process Solutions a la derecha */
 .brandbar{display:flex;align-items:center;justify-content:space-between;gap:12px;margin:2px 0 4px}
 /* Logo de Process Solutions en vector (sin fondo). En modo oscuro el texto pasa a claro para que se lea. */
 .pslogo{height:42px;width:auto;flex:none}
-@media(prefers-color-scheme:dark){ .pslogo{--ps0:#ffffff;--ps1:#f1f7ff;--ps2:#d5ecfb;--ps3:#a5dcf8;--ps4:#6fcaf3;--ps5:#3ab9ee;--ps6:#19aee8;--ps-texto:#eaf2ff;--ps-nube:#2a5fc0} }
+@media(prefers-color-scheme:dark){ .pslogo{--ps0:#4f8df0;--ps1:#4f8df0;--ps2:#479af1;--ps3:#3fa7f3;--ps4:#38b3f4;--ps5:#33c0f6;--ps6:#35cbf7;--ps-texto:#6fa4f3;--ps-nube:#2a5fc0} }
 @media(max-width:480px){ .nexo svg{width:32px;height:32px} .nexo .nexo-wm{font-size:24px} .pslogo{height:32px} }
 .logintitle{text-align:center;margin:4px 0 2px;font-size:20px}
 .loginlinks{text-align:center;margin-top:14px;font-size:13px}
@@ -778,7 +780,7 @@ function renderMenuBtn(menu){
 // ---------- 4. PANTALLAS ----------
 // Marca Nexo (símbolo + nombre). grande=true para la pantalla de inicio de sesión.
 function nexoLogo(grande){
-  return `<span class="nexo${grande?" grande":""}"><svg viewBox="0 0 64 64" aria-hidden="true"><path d="M32 33L32 13M32 33L14 47M32 33L50 47" stroke="var(--nx3)" stroke-width="5" stroke-linecap="round"/><circle cx="32" cy="12" r="7" fill="var(--nx2)"/><circle cx="13" cy="48" r="7" fill="var(--nx1)"/><circle cx="51" cy="48" r="7" fill="var(--nx3)"/><circle cx="32" cy="33" r="9.5" fill="var(--nx1)"/><circle cx="32" cy="33" r="3.6" fill="var(--nxh)"/></svg><span class="nexo-wm">Nexo</span></span>`;
+  return `<span class="nexo${grande?" grande":""}"><svg viewBox="0 0 64 64" aria-hidden="true"><defs><linearGradient id="nxg" gradientUnits="userSpaceOnUse" x1="8" y1="54" x2="52" y2="8"><stop offset="0" style="stop-color:var(--nxa)"/><stop offset=".55" style="stop-color:var(--nxb)"/><stop offset="1" style="stop-color:var(--nxc)"/></linearGradient></defs><g fill="url(#nxg)" stroke="url(#nxg)"><path d="M32 33L32 13M32 33L14 47M32 33L50 47" stroke-width="5" stroke-linecap="round" fill="none"/><g stroke="none"><circle cx="32" cy="12" r="7"/><circle cx="13" cy="48" r="7"/><circle cx="51" cy="48" r="7"/><circle cx="32" cy="33" r="9.5"/></g></g><circle cx="32" cy="33" r="3.6" fill="var(--nxh)"/></svg><span class="nexo-wm">Nexo</span></span>`;
 }
 // Dibuja toda la app: título, pestañas, selector de mes y la pestaña activa (o la pantalla de inicio de sesión).
 // Se llama cada vez que cambian los datos o la pestaña. Al final conecta los eventos (wireEvents).
