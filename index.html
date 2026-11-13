@@ -397,6 +397,11 @@ tr:last-child td{border-bottom:none}
 .cbfold{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
 .cbfold summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--primary)}
 .cbfold-body{margin-top:10px}
+.cbfold summary .secres{color:var(--sub);font-weight:500}
+/* Casillas en línea (equipo del proyecto, ingenieros de una orden) */
+.chips{display:flex;flex-wrap:wrap;gap:6px}
+.chip{display:inline-flex;align-items:center;gap:6px;margin:0;padding:6px 10px;border-radius:999px;background:var(--fill);font-size:13px;font-weight:500;color:var(--text);cursor:pointer}
+.chip input{width:auto;margin:0}
 /* Proyectos: barra de búsqueda/filtros, filas de la lista, avisos y formulario de órdenes. */
 .b-gris{background:var(--fill);color:var(--sub)}
 .ptools{display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin:12px 0 6px}
@@ -1390,7 +1395,7 @@ async function ejecutarAccion(act, ds){
   if(act === "confirm-del-proj"){ await deleteProject(ds.id); return; }
   if(act === "proj-horas"){ const p = projectsList.find(x=>x.id===ds.id); if(p){ projHoras[p.id] = {loading:true}; render(); await loadProjHoras(p); } return; }
   if(act === "orden-save"){ await saveOrden(ds.proj); return; }
-  if(act === "orden-edit"){ editingOrden = { proj: ds.proj, id: ds.orden }; pendingConfirm = null; render(); const el = document.getElementById("of_numero"); if(el) el.focus(); return; }
+  if(act === "orden-edit"){ editingOrden = { proj: ds.proj, id: ds.orden }; pendingConfirm = null; openFolds.add("sec-ordenes-"+ds.proj); render(); const el = document.getElementById("of_numero"); if(el) el.focus(); return; }
   if(act === "orden-cancel"){ editingOrden = null; render(); return; }
   if(act === "ask-del-orden"){ pendingConfirm = {type:"deleteOrden", key: ds.orden}; render(); return; }
   if(act === "confirm-del-orden"){ await deleteOrden(ds.proj, ds.orden); return; }
@@ -1506,6 +1511,16 @@ async function doRenameEngineer(i){
     if(newId !== oldId){ await db.doc("config_engineers/"+oldId).delete(); }
     // La cuenta de acceso sigue ligada al ingeniero con su nombre nuevo
     for(const u of usuariosList.filter(u=>u.engineer===oldName)){ const { email:_e, ...datos } = u; await db.doc("usuarios/"+u.email).set({ ...datos, engineer:newName, ...(datos.nombre===oldName ? {nombre:newName} : {}), updatedAt:new Date().toISOString() }); }
+    // Proyectos donde figura como líder, en el equipo o en una orden de servicio
+    for(const p of projectsList){
+      const enOrden = (p.ordenes||[]).some(o=>(o.ingenieros||[]).includes(oldName));
+      if(p.lider!==oldName && !(p.equipo||[]).includes(oldName) && !enOrden) continue;
+      const cambio = { updatedAt:new Date().toISOString() };
+      if(p.lider===oldName) cambio.lider = newName;
+      if((p.equipo||[]).includes(oldName)) cambio.equipo = p.equipo.map(n=>n===oldName?newName:n);
+      if(enOrden) cambio.ordenes = p.ordenes.map(o=>(o.ingenieros||[]).includes(oldName) ? { ...o, ingenieros:o.ingenieros.map(n=>n===oldName?newName:n) } : o);
+      await db.doc("config_projects/"+p.id).update(cambio);
+    }
     // El salario está guardado con el nombre: se pasa al nombre nuevo
     const salViejo = costosIng[slugify(oldName)];
     if(salViejo && slugify(oldName) !== slugify(newName)){
@@ -1554,7 +1569,9 @@ async function addEngineer(){
 
 // ---------- Proyectos y servicios: un documento por proyecto en config_projects/<codigo> ----------
 // Campos: codigo, tipo, cliente, anio, nombre (corto, el que ven los ingenieros), objeto, docTipo, documento (OC/OS/contrato),
-//         estado, fechaInicio, fechaFin, notas, ordenes[] (órdenes de contratos a solicitud del cliente), duplicado, importado.
+//         estado, fechaInicio, fechaFin, notas, ordenes[] (órdenes de contratos a solicitud del cliente), duplicado, importado,
+//         lider, equipo[] (ingenieros asignados), lineaBase ("si" | "no" | "" = automático por fecha).
+//         Cada orden: numero, fecha, dias (vendidos), fechaProgramada, descripcion, estado, nota, ingenieros[], fechaSalida, fechaRegreso.
 const TIPOS_PROY = ["Proyecto","Servicio","Interno"];
 const TIPO_PROY_DESC = { Proyecto:"3xxx", Servicio:"20xx", Interno:"0xxx · capacitaciones y demos" };
 const ESTADOS_PROY = ["Por ejecutar","En ejecución","Pendiente","Bloqueado","Contrato vigente","Ejecutado pendiente de pago","Cerrado"];
@@ -1634,9 +1651,9 @@ function renderProyectos(){
     return `<tr class="prow ${p.id===projSel?"psel":""}" data-act="proj-open" data-id="${escH(p.id)}" data-search="${escH(search)}" ${q && !search.includes(q) ? 'style="display:none"' : ""}>
       <td data-label="Código"><b>${escH(p.codigo)}</b>${p.duplicado?` <span class="badge b-bloq" title="Código repetido en la base anterior">dup</span>`:""}</td>
       <td data-label="Cliente">${escH(p.cliente||"—")}</td>
-      <td data-label="Nombre">${escH(p.nombre||"—")}${oa?`<div class="hint" style="color:var(--primary)">${oa} orden(es) abierta(s)</div>`:""}${vence!=null && vence<=DIAS_AVISO_VENCIMIENTO?`<div class="hint" style="color:var(--bad)">${vence<0?"Venció":"Vence en "+vence+" días"}</div>`:""}</td>
+      <td data-label="Nombre">${escH(p.nombre||"—")}${p.lider?`<div class="hint">Líder: ${escH(p.lider)}</div>`:""}${oa?`<div class="hint" style="color:var(--primary)">${oa} orden(es) abierta(s)</div>`:""}${vence!=null && vence<=DIAS_AVISO_VENCIMIENTO?`<div class="hint" style="color:var(--bad)">${vence<0?"Venció":"Vence en "+vence+" días"}</div>`:""}</td>
       <td data-label="Estado"><span class="badge ${ESTADO_PROY_BADGE[est]||"b-curso"}">${escH(est)}</span></td>
-      ${verHoras ? `<td data-label="Consumo">${presupuestoHoras(p) ? consumoBadge(p) : "—"}</td>` : ""}
+      ${verHoras ? `<td data-label="Consumo">${!presupuestoHoras(p) ? "—" : !conLineaBase(p) ? `<span class="hint">Sin línea base</span>` : consumoBadge(p)}</td>` : ""}
       <td data-label="OC / OS">${escH(docLabel(p))}</td>
       <td data-label="Año">${p.anio||"—"}</td>
     </tr>`;
@@ -1712,6 +1729,15 @@ function renderProjDetalle(){
       <div><label>Fecha de inicio</label><input type="date" id="pf_inicio" value="${p.fechaInicio||""}"></div>
       <div><label>Fecha de fin ${est==="Contrato vigente"?'<span class="hint">(vigencia del contrato)</span>':""}</label><input type="date" id="pf_fin" value="${p.fechaFin||""}"></div>
     </div>
+    <div class="row2">
+      <div><label>Líder del proyecto</label><select id="pf_lider"><option value="">— Sin asignar —</option>${engineerNames().concat(p.lider && !engineerNames().includes(p.lider) ? [p.lider] : []).map(n=>`<option value="${escH(n)}" ${n===p.lider?"selected":""}>${escH(n)}</option>`).join("")}</select></div>
+      <div><label>Línea base <span class="hint">(¿entra en alertas e indicadores?)</span></label><select id="pf_lb">
+        <option value="" ${!p.lineaBase?"selected":""}>Automático: ${lineaBaseAuto(p) ? "sí" : "no"} (${p.fechaInicio ? "por fecha de inicio" : p.importado ? "viene de la base anterior" : "por fecha de creación"})</option>
+        <option value="si" ${p.lineaBase==="si"?"selected":""}>Sí, con línea base</option>
+        <option value="no" ${p.lineaBase==="no"?"selected":""}>No, sin línea base</option></select></div>
+    </div>
+    <label>Equipo asignado</label>
+    <div class="chips">${engineerNames().concat((p.equipo||[]).filter(n=>!engineerNames().includes(n))).map(n=>`<label class="chip"><input type="checkbox" class="pf_eq" value="${escH(n)}" ${(p.equipo||[]).includes(n)?"checked":""}> ${escH(n)}</label>`).join("") || `<span class="hint">No hay ingenieros en el Equipo.</span>`}</div>
     <label>Notas y seguimiento <span class="hint">(pagos pendientes, novedades, contactos…)</span></label>
     <textarea id="pf_notas">${escH(p.notas||"")}</textarea>
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:12px;align-items:center">
@@ -1727,11 +1753,61 @@ function renderProjDetalle(){
       <button class="tiny" data-act="proj-close">Cerrar</button>
     </div>
     ${!isNew && p.duplicado ? `<div class="palert bad">Este código está repetido en la base anterior con otro cliente. Revisa las notas.</div>` : ""}
+    ${!isNew && !conLineaBase(p) ? `<div class="hint" style="margin-bottom:8px">Sin línea base: este proyecto no entra en alertas ni indicadores${p.lineaBase==="no" ? " (marcado a mano)" : ` (empezó antes del ${LINEA_BASE_CORTE} o viene de la base anterior)`}. Se cambia en el campo "Línea base".</div>` : ""}
     ${isOwner ? form + (isNew ? "" : renderOrdenes(p))
       : `<div class="hint" style="margin-bottom:6px">Solo consulta: los datos del proyecto los modifica un administrador.</div><div class="ro">${form}${renderOrdenes(p)}</div>`}
-    ${isNew ? "" : (puede("proyectos.horas") ? renderProjHoras(p) : "") + (puede("gastos.ver") ? renderProjCosto(p) : "") + (puede("costos.ver") ? renderProjRentab(p) : "")}
+    ${isNew ? "" : renderSeccionesProyecto(p)}
   </div>`;
 }
+
+// Secciones de la ficha (horas, costo y gastos, rentabilidad): todas plegadas, con un resumen en el título.
+// Solo se abren al hacer clic, para que la ficha no muestre de entrada lo que no se está usando.
+function renderSeccionesProyecto(p){
+  let out = "";
+  if(puede("proyectos.horas")){
+    const h = projHoras[p.id], c = consumoDe(p);
+    const res = !h || h.loading ? "cargando…" : h.error ? "no se pudo cargar" : c && c.pct!=null ? `${fmtN(h.total)} h de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)} %)` : `${fmtN(h.total)} h`;
+    out += cbFold("sec-horas-"+p.id, secTitulo("Horas registradas", res), renderProjHoras(p));
+  }
+  if(puede("gastos.ver")){
+    const n = gastos.filter(g=>g.proyId===p.id).length;
+    const c = puede("costos.ver") ? costoProyecto(p) : null;
+    const res = (c && !c.cargando && !c.error ? fmtCOP(c.total) + " · " : "") + (n ? `${n} gasto(s)` : "sin gastos");
+    out += cbFold("sec-costo-"+p.id, secTitulo(c ? "Costo y gastos" : "Gastos del proyecto", res), renderProjCosto(p));
+  }
+  if(puede("costos.ver")){
+    const x = rentabilidadDe(p);
+    const res = !x ? "sin valor vendido" : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : `margen ${fmtPct(x.margenRef)}${x.pron ? " al cierre" : " a la fecha"}`;
+    out += cbFold("sec-rent-"+p.id, secTitulo("Rentabilidad", res), renderProjRentab(p));
+  }
+  return out;
+}
+
+// ---------- Gestión: línea base, responsable y servicios en campo ----------
+// Línea base: los proyectos anteriores a esta fecha no tienen datos completos (presupuesto, horas desde el inicio),
+// así que no entran en alertas ni indicadores. Se puede forzar en cada ficha (campo lineaBase: "si" | "no" | "" = automático).
+const LINEA_BASE_CORTE = "2026-10-01";
+function lineaBaseAuto(p){
+  if(p.fechaInicio) return p.fechaInicio >= LINEA_BASE_CORTE;
+  if(p.importado) return false;                               // venía de la base anterior y no tiene fecha de inicio
+  return String(p.createdAt||"").slice(0,10) >= LINEA_BASE_CORTE; // creado en la app
+}
+function conLineaBase(p){ return p.lineaBase==="si" ? true : p.lineaBase==="no" ? false : lineaBaseAuto(p); }
+// Días en campo ejecutados de una orden: fechas en que los ingenieros asignados registraron "Servicio (en campo)"
+// en este proyecto entre la salida y el regreso (o hoy, si aún no regresan). Cuenta un día por ingeniero y fecha.
+// Devuelve null si a la orden le falta el ingeniero o la fecha de salida, o si las horas aún no cargan.
+function diasEjecutados(p, o){
+  const h = projHoras[p.id];
+  if(!h || !h.regs || !(o.ingenieros||[]).length || !o.fechaSalida) return null;
+  const hasta = o.fechaRegreso || todayStr();
+  const dias = new Set();
+  h.regs.forEach(d=>{
+    if(d.actividad===ACTIVIDAD_CAMPO && (Number(d.horas)||0) > 0 && o.ingenieros.includes(d.engineer) && d.fecha >= o.fechaSalida && d.fecha <= hasta) dias.add(d.engineer+"|"+d.fecha);
+  });
+  return dias.size;
+}
+// Título de una sección plegable de la ficha: nombre + resumen corto en gris.
+function secTitulo(nombre, resumen){ return `${nombre}${resumen ? ` <span class="secres">· ${resumen}</span>` : ""}`; }
 
 // Sección de órdenes de un contrato: tabla de órdenes y formulario para agregar o editar una.
 function renderOrdenes(p){
@@ -1741,10 +1817,11 @@ function renderOrdenes(p){
     const confirming = pendingConfirm && pendingConfirm.type==="deleteOrden" && pendingConfirm.key===o.id;
     return `<tr>
       <td data-label="Orden"><b>${escH(o.numero||"—")}</b></td>
-      <td data-label="Fecha">${o.fecha||"—"}</td>
+      <td data-label="Fecha">${escH(o.fecha||"—")}</td>
       <td data-label="Descripción">${escH(o.descripcion||"—")}${o.nota?`<div class="hint">${escH(o.nota)}</div>`:""}</td>
-      <td data-label="Días">${o.dias!=null && o.dias!=="" ? fmtN(o.dias)+" d" : "—"}</td>
-      <td data-label="Programada">${o.fechaProgramada||"—"}</td>
+      <td data-label="Días vendidos">${o.dias!=null && o.dias!=="" ? fmtN(o.dias)+" d" : "—"}</td>
+      <td data-label="En campo">${ordenCampoCelda(p, o)}</td>
+      <td data-label="Programada">${escH(o.fechaProgramada||"—")}</td>
       <td data-label="Estado"><select class="orden_estado" data-proj="${escH(p.id)}" data-orden="${escH(o.id)}">${selOpts(ESTADOS_ORDEN, o.estado)}</select></td>
       <td data-label="">${confirming
         ? `<span class="confirmrow">¿Eliminar? <button class="tiny bad" data-act="confirm-del-orden" data-proj="${escH(p.id)}" data-orden="${escH(o.id)}">Sí</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
@@ -1762,10 +1839,17 @@ function renderOrdenes(p){
         <div><label>Fecha de la orden</label><input type="date" id="of_fecha" value="${ed.fecha||todayStr()}"></div>
       </div>
       <div class="row2">
-        <div><label>Días de servicio solicitados</label><input type="number" id="of_dias" min="0" step="0.5" value="${ed.dias!=null?ed.dias:""}"></div>
+        <div><label>Días de servicio vendidos <span class="hint">(solicitados)</span></label><input type="number" id="of_dias" min="0" step="0.5" value="${ed.dias!=null?ed.dias:""}"></div>
         <div><label>Fecha programada de ejecución</label><input type="date" id="of_programada" value="${ed.fechaProgramada||""}"></div>
       </div>
       <label>Descripción</label><input id="of_descripcion" value="${escH(ed.descripcion||"")}" placeholder="Ej: 6 días de mantenimiento preventivo">
+      <label>Ingeniero(s) que van a campo</label>
+      <div class="chips">${engineerNames().concat((ed.ingenieros||[]).filter(n=>!engineerNames().includes(n))).map(n=>`<label class="chip"><input type="checkbox" class="of_ing" value="${escH(n)}" ${(ed.ingenieros||[]).includes(n)?"checked":""}> ${escH(n)}</label>`).join("")}</div>
+      <div class="row2">
+        <div><label>Salida a campo</label><input type="date" id="of_salida" value="${escH(ed.fechaSalida||"")}"></div>
+        <div><label>Regreso <span class="hint">(vacío si sigue en campo)</span></label><input type="date" id="of_regreso" value="${escH(ed.fechaRegreso||"")}"></div>
+      </div>
+      <div class="hint">Con el ingeniero y la salida, la app cuenta los días ejecutados: las fechas en que registró "${ACTIVIDAD_CAMPO}" en este proyecto entre la salida y el regreso.</div>
       <div class="row2">
         <div><label>Estado</label><select id="of_estado">${selOpts(ESTADOS_ORDEN, ed.estado||"Solicitada")}</select></div>
         <div><label>Nota</label><input id="of_nota" value="${escH(ed.nota||"")}" placeholder="Opcional"></div>
@@ -1775,11 +1859,20 @@ function renderOrdenes(p){
         ${editando ? `<button class="secondary" data-act="orden-cancel" style="flex:1">Cancelar</button>` : ""}
       </div>
     </div>`;
-  const titulo = `Órdenes del contrato (${ords.length}${abiertas?` · ${abiertas} abierta(s)`:""}${diasTot?` · ${fmtN(diasTot)} días solicitados`:""})`;
-  const inner = `${rows ? cbTable(["Orden","Fecha","Descripción","Días","Programada","Estado",""], rows) : `<div class="hint">Sin órdenes registradas.</div>`}${formOrden}`;
-  // En contratos vigentes las órdenes se muestran abiertas; en los demás quedan plegadas
-  if(estadoProy(p)==="Contrato vigente" || ords.length || editando) return `<h4 class="cbh">${titulo}</h4>${inner}`;
-  return cbFold("ordenes-"+p.id, "Órdenes del contrato (para contratos a solicitud del cliente)", inner);
+  const ejecTot = ords.reduce((a,o)=>a+(diasEjecutados(p,o)||0), 0);
+  const resumen = ords.length ? `${ords.length}${abiertas?` · ${abiertas} abierta(s)`:""}${diasTot?` · ${fmtN(diasTot)} días vendidos`:""}${ejecTot?` · ${ejecTot} ejecutados`:""}` : "ninguna";
+  const inner = `${rows ? cbTable(["Orden","Fecha","Descripción","Días vendidos","En campo","Programada","Estado",""], rows) : `<div class="hint">Sin órdenes registradas.</div>`}${formOrden}`;
+  return cbFold("sec-ordenes-"+p.id, secTitulo("Órdenes de servicio y compra", resumen), inner);
+}
+// Celda "En campo" de una orden: quién fue, cuándo, y días ejecutados contra los vendidos.
+function ordenCampoCelda(p, o){
+  const ings = o.ingenieros||[];
+  if(!ings.length && !o.fechaSalida) return "—";
+  const ej = diasEjecutados(p, o), vend = Number(o.dias)||0;
+  const pasado = ej!=null && vend > 0 && ej > vend;
+  return `${ings.length ? escH(ings.join(", ")) : `<span class="hint">Sin ingeniero</span>`}
+    <div class="hint">${o.fechaSalida ? `${escH(o.fechaSalida)} → ${o.fechaRegreso ? escH(o.fechaRegreso) : "en campo"}` : "Sin fecha de salida"}</div>
+    ${ej!=null ? `<div><span class="badge ${pasado ? "b-bloq" : "b-comp"}">${ej} d ejecutados${vend ? ` de ${fmtN(vend)}` : ""}</span></div>` : ""}`;
 }
 
 // Tabla de horas registradas por cada ingeniero en el proyecto.
@@ -1884,7 +1977,7 @@ let consumoPromise = null;
 function loadConsumoProyectos(force){
   if(!db || !puede("proyectos.horas")) return Promise.resolve();
   if(consumoPromise) return consumoPromise;
-  const lista = projectsList.filter(p=>(presupuestoHoras(p) || tieneVenta(p)) && (force || !projHoras[p.id] || projHoras[p.id].error));
+  const lista = projectsList.filter(p=>conLineaBase(p) && (presupuestoHoras(p) || tieneVenta(p)) && (force || !projHoras[p.id] || projHoras[p.id].error));
   if(!lista.length) return Promise.resolve();
   consumoPromise = Promise.all(lista.map(p=>loadProjHoras(p, true))).then(()=>{
     consumoPromise = null;
@@ -1905,7 +1998,7 @@ function utilizacionMes(r){
 }
 // Proyectos con presupuesto, ordenados del más consumido al menos consumido.
 function proyectosConConsumo(){
-  return projectsList.filter(p=>presupuestoHoras(p)).map(p=>({ p, c:consumoDe(p) }))
+  return projectsList.filter(p=>conLineaBase(p) && presupuestoHoras(p)).map(p=>({ p, c:consumoDe(p) }))
     .sort((a,b)=> ((b.c&&b.c.pct)||0) - ((a.c&&a.c.pct)||0));
 }
 
@@ -2203,7 +2296,7 @@ function margenBadge(x){
 }
 // Proyectos con valor vendido, del margen más bajo al más alto.
 function proyectosConVenta(){
-  return projectsList.filter(tieneVenta).map(p=>({ p, x:rentabilidadDe(p) }))
+  return projectsList.filter(p=>conLineaBase(p) && tieneVenta(p)).map(p=>({ p, x:rentabilidadDe(p) }))
     .sort((a,b)=> ((a.x&&a.x.margenRef)!=null ? a.x.margenRef : 999) - ((b.x&&b.x.margenRef)!=null ? b.x.margenRef : 999));
 }
 // Proyectos en alerta de margen o con el avance atrasado frente a las horas (solo con datos completos).
@@ -2358,7 +2451,8 @@ function leerProjForm(){
   return { tipo:v("pf_tipo"), codigo:v("pf_codigo"), cliente:v("pf_cliente"), anio: v("pf_anio") ? Number(v("pf_anio")) : null,
     nombre:v("pf_nombre"), objeto:v("pf_objeto"), docTipo:v("pf_doctipo"), documento:v("pf_documento"),
     estado:v("pf_estado"), fechaInicio:v("pf_inicio"), fechaFin:v("pf_fin"), notas:v("pf_notas"),
-    presupuestoValor: v("pf_pres") ? Number(v("pf_pres")) : null, presupuestoUnidad: v("pf_pres_u") || "h" };
+    presupuestoValor: v("pf_pres") ? Number(v("pf_pres")) : null, presupuestoUnidad: v("pf_pres_u") || "h",
+    lider: v("pf_lider"), lineaBase: v("pf_lb"), equipo: [...document.querySelectorAll(".pf_eq")].filter(x=>x.checked).map(x=>x.value) };
 }
 // Crea un proyecto nuevo o guarda los cambios de uno existente en config_projects.
 async function saveProject(){
@@ -2367,6 +2461,7 @@ async function saveProject(){
   if(!f.nombre){ showMsg("Escribe el nombre corto del proyecto.", "bad"); return; }
   if(f.presupuestoValor!=null && (isNaN(f.presupuestoValor) || f.presupuestoValor < 0)){ showMsg("El presupuesto debe ser un número positivo.", "bad"); return; }
   if(f.fechaInicio && f.fechaFin && f.fechaFin < f.fechaInicio){ showMsg("La fecha de fin no puede ser antes de la de inicio.", "bad"); return; }
+  if(f.lider && !f.equipo.includes(f.lider)) f.equipo.unshift(f.lider);   // el líder siempre hace parte del equipo
   try{
     if(isNew){
       if(!f.codigo){ showMsg("El número del proyecto no puede quedar vacío.", "bad"); return; }
@@ -2402,8 +2497,10 @@ async function saveOrden(projId){
   const p = projectsList.find(x=>x.id===projId); if(!p) return;
   const v = id=>{ const el=document.getElementById(id); return el ? el.value.trim() : ""; };
   const o = { numero:v("of_numero"), fecha:v("of_fecha"), dias: v("of_dias")==="" ? null : Number(v("of_dias")), fechaProgramada:v("of_programada"),
-    descripcion:v("of_descripcion"), estado:v("of_estado") || "Solicitada", nota:v("of_nota") };
+    descripcion:v("of_descripcion"), estado:v("of_estado") || "Solicitada", nota:v("of_nota"),
+    ingenieros:[...document.querySelectorAll(".of_ing")].filter(x=>x.checked).map(x=>x.value), fechaSalida:v("of_salida"), fechaRegreso:v("of_regreso") };
   if(!o.numero && !o.descripcion){ showMsg("Escribe al menos el número de la OC/OS o una descripción.", "bad"); return; }
+  if(o.fechaSalida && o.fechaRegreso && o.fechaRegreso < o.fechaSalida){ showMsg("El regreso no puede ser antes de la salida.", "bad"); return; }
   const ordenes = (p.ordenes||[]).slice();
   const editId = editingOrden && editingOrden.proj===projId ? editingOrden.id : null;
   if(editId){
@@ -3192,13 +3289,13 @@ function buildReportData(){
 
 // Alertas del área para el informe: consumo de horas, contratos por vencer, pagos pendientes y órdenes abiertas.
 function alertasArea(){
-  const sobre = projectsList.map(p=>({ p, c:consumoDe(p) })).filter(x=>x.c && !x.c.cargando && !x.c.error && x.c.nivel!=="ok")
+  const sobre = projectsList.filter(conLineaBase).map(p=>({ p, c:consumoDe(p) })).filter(x=>x.c && !x.c.cargando && !x.c.error && x.c.nivel!=="ok")
     .sort((a,b)=>b.c.pct-a.c.pct);
   const vencen = projectsList.filter(p=>estadoProy(p)==="Contrato vigente" && p.fechaFin && diasHasta(p.fechaFin)<=DIAS_AVISO_VENCIMIENTO)
     .sort((a,b)=>a.fechaFin.localeCompare(b.fechaFin));
   const pendPago = projectsList.filter(p=>estadoProy(p)==="Ejecutado pendiente de pago" || (p.ordenes||[]).some(o=>o.estado==="Ejecutada pendiente de pago"));
   const ordAbiertas = projectsList.reduce((a,p)=>a+ordenesAbiertas(p).length, 0);
-  const activosSinPres = projectsList.filter(p=>proyActivo(p) && !presupuestoHoras(p));
+  const activosSinPres = projectsList.filter(p=>conLineaBase(p) && proyActivo(p) && !presupuestoHoras(p));
   return { sobre, vencen, pendPago, ordAbiertas, activosSinPres };
 }
 
@@ -3698,7 +3795,7 @@ async function logout(){
 function stopAllSubs(){
   [unsubMine, unsubAll, unsubEst, unsubEng, unsubProj, unsubOpenTasks, unsubUsuarios, unsubCierre].forEach(u=>{ try{ u && u(); }catch(e){} });
   unsubMine = unsubAll = unsubEst = unsubEng = unsubProj = unsubOpenTasks = unsubUsuarios = unsubCierre = null;
-  cierreHasta = ""; historialList = null; limitesAlcanzados.clear();
+  cierreHasta = ""; historialList = null; limitesAlcanzados.clear(); openFolds.clear();
   stopCompData();
   myEntries = []; allEntries = []; engineersList = []; projectsList = []; openTasksList = []; usuariosList = [];
   estimates = {}; projHoras = {}; projSel = ""; editingId = null; pendingConfirm = null; formMsg = "";
