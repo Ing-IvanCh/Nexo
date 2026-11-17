@@ -397,6 +397,9 @@ tr:last-child td{border-bottom:none}
 .cbfold{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
 .cbfold summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--primary)}
 .cbfold-body{margin-top:10px}
+.sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
+.sem{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--sub);opacity:.35}
+.sem.ok{background:var(--ok);opacity:1} .sem.warn{background:var(--warn);opacity:1} .sem.bad{background:var(--bad);opacity:1}
 .cbfold summary .secres{color:var(--sub);font-weight:500}
 /* Bitácora del proyecto */
 .nota{border-left:3px solid var(--primary);padding:6px 10px;margin-top:8px;background:var(--fill);border-radius:0 var(--radius-sm) var(--radius-sm) 0}
@@ -591,7 +594,7 @@ function showGlobalError(context, err){
 // Confirmación en pantalla pendiente (¿Seguro? Sí/No), en lugar de las ventanas confirm() del navegador.
 let pendingConfirm = null;
 // Páginas: las principales van en la barra; las demás en el menú ☰ (cuando el usuario tiene más de 4).
-const MAIN_PAGES = [["form","Registrar / Mis actividades"],["resumen","Resumen general"],["proyectos","Proyectos"],["informes","Informes"]];
+const MAIN_PAGES = [["form","Registrar / Mis actividades"],["misproyectos","Mis proyectos"],["resumen","Resumen general"],["proyectos","Proyectos"],["informes","Informes"]];
 const MENU_PAGES = [["equipo","Equipo"],["compensatorios","Compensatorios"],["bonos","Bonos de campo"],["costos","Costos"],["usuarios","Usuarios y accesos"],["historial","Historial de cambios"]];
 let menuOpen = false;
 // Sesión: "cargando" | "fuera" (pantalla de inicio) | "dentro" (con al menos un rol) | "sinacceso" (cuenta sin roles)
@@ -644,6 +647,7 @@ function verForm(){ return isOwner || !!myEngineer; }
 function paginasVisibles(){
   const v = new Set();
   if(verForm()) v.add("form");
+  if(myEngineer && !isOwner) v.add("misproyectos");   // el ingeniero ve los proyectos donde es líder o equipo
   if(puede("resumen")) v.add("resumen");
   if(puede("proyectos.ver")) v.add("proyectos");
   if(puede("informes.gestion") || puede("informes.comp")) v.add("informes");
@@ -684,6 +688,7 @@ const CAP_ACCION = {
   "cb-trat":"comp.editar", "cb-dom-pago":"comp.editar", "cb-bono-pago":"comp.editar", "cb-saldo-pago":"comp.editar", "cb-save-saldo":"comp.editar",
   "ask-cierre":"admin", "confirm-cierre":"admin", "hist-reload":"admin",
   "cierre-save":"admin", "cierre-cifras":"admin", "ask-cierre-del":"admin", "confirm-cierre-del":"admin",
+  "proj-informe":"gestion.ver",
   "gest-save":"admin", "gest-edit":"admin", "ask-del-gest":"admin", "confirm-del-gest":"admin",
   "usr-new":"admin", "usr-edit":"admin", "usr-save":"admin", "usr-resend":"admin", "ask-usr-remove":"admin", "confirm-usr-remove":"admin"
 };
@@ -729,6 +734,7 @@ let openFolds = new Set(); // secciones plegables abiertas
 // Proyectos
 let projSel = "";              // id del proyecto abierto, o "__new__"
 let projFiltroEstado = "activos", projFiltroTipo = "todos", projBusca = "";
+let misHoras = null;             // horas propias del ingeniero por código de proyecto (página Mis proyectos)
 let projHoras = {};            // id -> {loading} | {rows,total,extra,n} | {error}
 let editingOrden = null;       // {proj, id} de la orden en edición
 
@@ -895,7 +901,7 @@ function renderPantalla(){
       <span class="sesion"><span class="hint" title="Sesión iniciada">${escH(authEmail)}${etiquetaRoles() ? " · "+escH(etiquetaRoles()) : ""}</span><button class="tiny" id="btn_logout">Cerrar sesión</button></span>
     </div>
     ${ro ? `<div class="ronote">Solo consulta: tu usuario puede ver esta página pero no modificarla.</div><div class="ro">` : ""}
-    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : view==='costos' ? renderCostos() : view==='usuarios' ? renderUsuarios() : view==='historial' ? renderHistorial() : renderProyectos()}
+    ${view==='form' ? renderForm() : view==='resumen' ? renderResumen() : view==='equipo' ? renderEquipo() : view==='compensatorios' ? renderCompensatorios() : view==='bonos' ? renderBonos() : view==='informes' ? renderInformes() : view==='costos' ? renderCostos() : view==='usuarios' ? renderUsuarios() : view==='historial' ? renderHistorial() : view==='misproyectos' ? renderMisProyectos() : renderProyectos()}
     ${ro ? `</div>` : ""}
   `;
   // En las partes de solo consulta se bloquean los campos (los botones de modificar se ocultan con CSS).
@@ -1165,7 +1171,7 @@ function showMsg(text, type){
 function wireEvents(){
   document.querySelectorAll(".tab[data-tab], .menu-item[data-tab]").forEach(t=>{
     // Al cambiar de pestaña se limpia el último mensaje para que no aparezca fuera de contexto
-    t.onclick = ()=>{ view = t.dataset.tab; menuOpen = false; pendingConfirm = null; formMsg = ""; usrEdit = null; costosBorrador = {}; if(view==="historial") cargarHistorial(); else render(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); };
+    t.onclick = ()=>{ view = t.dataset.tab; menuOpen = false; pendingConfirm = null; formMsg = ""; usrEdit = null; costosBorrador = {}; if(view==="historial") cargarHistorial(); else render(); if(view==="proyectos" || view==="informes") loadConsumoProyectos(); if(view==="misproyectos") loadMisHoras(); };
   });
   const btnMenu = document.getElementById("btn_menu");
   if(btnMenu) btnMenu.onclick = (e)=>{ e.stopPropagation(); menuOpen = !menuOpen; render(); };
@@ -1412,6 +1418,8 @@ async function ejecutarAccion(act, ds){
   if(act === "inf-proj"){ view = "proyectos"; projSel = ds.id; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const pr = projectsList.find(x=>x.id===ds.id); if(pr && !projHoras[pr.id]) loadProjHoras(pr); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-new"){ projSel = "__new__"; editingOrden = null; pendingConfirm = null; formMsg = ""; render(); const el = document.getElementById("proj_detalle"); if(el) el.scrollIntoView({behavior:"smooth", block:"start"}); return; }
   if(act === "proj-close"){ projSel = ""; editingOrden = null; gestEdit = null; pendingConfirm = null; render(); return; }
+  if(act === "proj-informe"){ await downloadInformeProyecto(ds.proj, ds.dinero==="1"); return; }
+  if(act === "mis-horas"){ misHoras = null; await loadMisHoras(); return; }
   if(act === "proj-save"){ await saveProject(); return; }
   if(act === "ask-del-proj"){ pendingConfirm = {type:"deleteProj", key: ds.id}; render(); return; }
   if(act === "confirm-del-proj"){ await deleteProject(ds.id); return; }
@@ -1705,6 +1713,7 @@ function renderProyectos(){
 
   const detalle = projSel ? renderProjDetalle() : "";
   return `${detalle}
+  ${renderTablero()}
   <div class="card">
     <div class="admin-note">Registro de proyectos y servicios. La numeración es automática por tipo: <b>3xxx</b> Proyectos · <b>20xx</b> Servicios · <b>0xxx</b> Internos (capacitaciones y demos). Los ingenieros solo ven en su lista los proyectos <b>Por ejecutar, En ejecución, Pendientes, Bloqueados</b> y <b>Contratos vigentes</b>. Toca un proyecto para ver su detalle, sus órdenes y las horas registradas.</div>
     ${alertas.join("")}
@@ -1807,7 +1816,7 @@ function renderSeccionesProyecto(p){
     const res = !x ? "sin valor vendido" : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : `margen ${fmtPct(x.margenRef)}${x.pron ? " al cierre" : " a la fecha"}`;
     out += cbFold("sec-rent-"+p.id, secTitulo("Rentabilidad", res), renderProjRentab(p));
   }
-  if(puede("gestion.ver")) out += renderGestion(p) + renderCierreProyecto(p);
+  if(puede("gestion.ver")) out += renderGestion(p) + renderCierreProyecto(p) + renderInformeProyecto(p);
   return out;
 }
 
@@ -1915,6 +1924,238 @@ function renderGestion(p){
   return cbFold("sec-riesgos-"+p.id, secTitulo("Riesgos y problemas", rRes), (rRows ? cbTable(["Tipo","Descripción","Impacto","Responsable","Fecha","Estado",""], rRows) : `<div class="hint">Sin riesgos ni problemas registrados.</div>`) + rForm)
     + cbFold("sec-cambios-"+p.id, secTitulo("Cambios de alcance", cRes), (cRows ? cbTable(["Fecha","Descripción","Solicitado por","Horas adicionales","Estado",""], cRows) : `<div class="hint">Sin cambios de alcance registrados.</div>`) + cForm)
     + cbFold("sec-bitacora-"+p.id, secTitulo("Bitácora", ns.length ? `${ns.length} nota(s) · última ${escH(ns[0].fecha||"")}` : "sin notas"), nForm + (nList || `<div class="hint" style="margin-top:8px">Sin notas todavía.</div>`));
+}
+// ---------- Resumen de horas guardado en el proyecto ----------
+// Los ingenieros solo pueden leer sus propios registros, así que no pueden sumar las horas de todo el equipo.
+// Cuando un administrador tiene cargadas las horas de un proyecto, deja en su ficha {horas, presupuesto, al}
+// (solo horas, nada de dinero) para que la página "Mis proyectos" muestre el consumo total. Solo escribe si cambió.
+const resumenEnCurso = new Set();
+function sincronizarResumenHoras(){
+  if(!db || !isOwner || !gestionCargada) return;
+  const r2 = v => Math.round((Number(v)||0)*100)/100;
+  projectsList.forEach(p=>{
+    const h = projHoras[p.id];
+    if(!h || h.loading || h.error || resumenEnCurso.has(p.id)) return;
+    const pres = presupuestoHoras(p);
+    const nuevo = { horas: r2(h.total), presupuesto: pres ? r2(pres.horas) : null };
+    const act = p.resumenHoras || {};
+    if(act.horas === nuevo.horas && (act.presupuesto==null ? null : act.presupuesto) === nuevo.presupuesto) return;
+    resumenEnCurso.add(p.id);
+    db.doc("config_projects/"+p.id).update({ resumenHoras: { ...nuevo, al: todayStr() } })
+      .catch(err=>console.error("Resumen de horas", err)).then(()=>resumenEnCurso.delete(p.id));
+  });
+}
+
+// ---------- Página "Mis proyectos" (ingenieros) ----------
+// Proyectos donde el ingeniero es líder o hace parte del equipo. Muestra datos generales, sus propias horas
+// y el consumo total de horas contra el presupuesto (del resumen que deja el administrador). Nunca muestra dinero.
+async function loadMisHoras(){
+  if(!db || !myEngineer || (misHoras && !misHoras.error)) return;
+  misHoras = { loading:true };
+  try{
+    const snap = await db.collection("activities").where("engineer","==",myEngineer).orderBy("fecha","desc").limit(5000).get();
+    const by = {};
+    snap.docs.forEach(x=>{
+      const d = x.data();
+      if(AUSENCIA_TYPES.includes(d.tipoHora)) return;
+      const cod = proyectoCodigo(d.proyecto) || String(d.proyecto||"").trim();
+      if(!cod) return;
+      const r = by[cod] || (by[cod] = { horas:0, n:0, desde:d.fecha||"", hasta:d.fecha||"" });
+      r.horas += Number(d.horas)||0; r.n++;
+      if(d.fecha && (!r.desde || d.fecha < r.desde)) r.desde = d.fecha;
+      if(d.fecha && d.fecha > r.hasta) r.hasta = d.fecha;
+    });
+    misHoras = { by };
+    revisarLimite(`Registros de ${myEngineer}`, snap.docs.length, 5000);
+  }catch(err){ misHoras = { error: err.message||err.code }; }
+  if(view==="misproyectos") render();
+}
+function misProyectos(){
+  return projectsList.filter(p=>p.lider===myEngineer || (p.equipo||[]).includes(myEngineer))
+    .sort((a,b)=> String(b.codigo).localeCompare(String(a.codigo), "es", {numeric:true}));
+}
+function renderMisProyectos(){
+  const lista = misProyectos();
+  const fila = p=>{
+    const est = estadoProy(p), esLider = p.lider===myEngineer;
+    const mh = misHoras && misHoras.by ? misHoras.by[String(p.codigo||"").trim()] : null;
+    const r = p.resumenHoras;
+    let cons = `<span class="hint">—</span>`;
+    if(r && r.horas!=null){
+      if(r.presupuesto > 0){
+        const pct = r.horas / r.presupuesto * 100, nivel = pct > 100 ? "bad" : pct >= PRES_ALERTA_PCT ? "warn" : "ok";
+        cons = `<span class="badge ${NIVEL_BADGE[nivel]}">${Math.round(pct)} %</span> <span class="hint">${fmtN(r.horas)} / ${fmtN(r.presupuesto)} h</span>`;
+      } else cons = `${fmtN(r.horas)} h <span class="hint">sin presupuesto</span>`;
+      cons += `<div class="hint">al ${escH(r.al||"")}</div>`;
+    }
+    const equipo = (p.equipo||[]).filter(n=>n!==p.lider);
+    return `<tr>
+      <td data-label="Proyecto"><div><b>${escH(p.codigo)}</b> ${escH(p.nombre||"")}<div class="hint">${escH(p.cliente||"")}</div></div></td>
+      <td data-label="Mi rol">${esLider ? `<span class="badge b-curso">Líder</span>` : "Equipo"}</td>
+      <td data-label="Estado"><span class="badge ${ESTADO_PROY_BADGE[est]||"b-curso"}">${escH(est)}</span></td>
+      <td data-label="Fechas">${escH(p.fechaInicio||"—")} → ${escH(p.fechaFin||"—")}</td>
+      <td data-label="Líder y equipo"><div>${p.lider ? `<b>${escH(p.lider)}</b>` : `<span class="hint">Sin líder</span>`}${equipo.length ? `<div class="hint">${escH(equipo.join(", "))}</div>` : ""}</div></td>
+      <td data-label="Mis horas">${!misHoras || misHoras.loading ? `<span class="hint">…</span>` : misHoras.error ? `<span class="hint">Sin datos</span>` : mh ? `<div>${fmtN(mh.horas)} h<div class="hint">${escH(mh.desde)} → ${escH(mh.hasta)}</div></div>` : "0 h"}</td>
+      <td data-label="Consumo del proyecto"><div>${cons}</div></td></tr>`;
+  };
+  const cab = ["Proyecto","Mi rol","Estado","Fechas","Líder y equipo","Mis horas","Consumo del proyecto"];
+  const activos = lista.filter(proyActivo), otros = lista.filter(p=>!proyActivo(p));
+  return `
+  <div class="card">
+    <div class="cbhead"><h3 style="margin:0">Mis proyectos</h3><button class="tiny" data-act="mis-horas">Actualizar</button></div>
+    <div class="admin-note">Proyectos donde eres líder o haces parte del equipo. <b>Mis horas</b> son las que tú has registrado en cada uno. El <b>consumo del proyecto</b> suma las horas de todo el equipo contra el presupuesto de horas, con corte a la fecha que aparece debajo.</div>
+    ${misHoras && misHoras.error ? `<div class="msg bad" style="display:block">No se pudieron cargar tus horas: ${escH(misHoras.error)}</div>` : ""}
+    ${activos.length ? cbTable(cab, activos.map(fila).join("")) : `<div class="empty">${lista.length ? "No tienes proyectos activos asignados." : "Todavía no estás asignado a ningún proyecto. El administrador te asigna desde la ficha del proyecto."}</div>`}
+    ${otros.length ? cbFold("mis-cerrados", secTitulo("Proyectos terminados o cancelados", String(otros.length)), cbTable(cab, otros.map(fila).join(""))) : ""}
+    <div class="msg ${formMsg?formMsgType:""}" id="msgbox3" style="margin-top:10px">${escH(formMsg)}</div>
+  </div>`;
+}
+
+// ---------- Tablero del director ----------
+// Una fila por proyecto activo con sus semáforos: horas, margen, avance, riesgos, cambios por cobrar y fecha de fin.
+// El estado general de la fila es el peor de sus semáforos. Va plegado arriba de la lista de proyectos.
+const PEOR = { ok:0, warn:1, bad:2 };
+function filaTablero(p){
+  const verCostos = puede("costos.ver"), lb = conLineaBase(p), est = estadoProy(p);
+  const niveles = [];
+  const c = lb ? consumoDe(p) : null;
+  if(c && c.nivel) niveles.push(c.nivel);
+  const x = verCostos && lb ? rentabilidadDe(p) : null;
+  const xOk = x && !x.sinTrm && !x.cargando && !x.error;
+  if(xOk && hayCostos()) niveles.push(x.nivel);
+  if(xOk && x.nivelAvance) niveles.push(x.nivelAvance);
+  const rs = gestion.filter(g=>g.proyId===p.id && riesgoAbierto(g)), altos = rs.filter(g=>g.impacto==="Alto").length;
+  if(altos) niveles.push("bad"); else if(rs.length) niveles.push("warn");
+  const cambios = gestion.filter(g=>g.proyId===p.id && g.clase==="cambio" && g.estado==="Pendiente de cobrar");
+  if(cambios.length) niveles.push("warn");
+  // La fecha de fin solo cuenta en contratos vigentes y en proyectos con línea base (los antiguos traen fechas viejas).
+  const dias = p.fechaFin && (lb || est==="Contrato vigente") ? diasHasta(p.fechaFin) : null;
+  const nFin = dias==null ? null : dias < 0 ? "bad" : (est==="Contrato vigente" ? dias <= DIAS_AVISO_VENCIMIENTO : dias <= 7) ? "warn" : "ok";
+  if(nFin) niveles.push(nFin);
+  const nivel = niveles.reduce((a,n)=>PEOR[n] > PEOR[a] ? n : a, "ok");
+  return { p, est, lb, c, x, xOk, rs, altos, cambios, dias, nFin, nivel, sinDatos: !niveles.length };
+}
+const SEM_TXT = { ok:"Verde", warn:"Amarillo", bad:"Rojo" };
+function renderTablero(){
+  if(!puede("proyectos.horas")) return "";
+  const verCostos = puede("costos.ver");
+  const filas = projectsList.filter(proyActivo).map(filaTablero)
+    .sort((a,b)=> PEOR[b.nivel]-PEOR[a.nivel] || String(b.p.codigo).localeCompare(String(a.p.codigo), "es", {numeric:true}));
+  const nB = filas.filter(f=>f.nivel==="bad").length, nW = filas.filter(f=>f.nivel==="warn").length;
+  const rows = filas.map(f=>{
+    const p = f.p;
+    return `<tr>
+      <td data-label="Semáforo"><span class="sem ${f.sinDatos ? "nd" : f.nivel}" title="${f.sinDatos ? "Sin datos para medir" : SEM_TXT[f.nivel]}"></span><span class="sr-only">${f.sinDatos ? "Sin datos" : SEM_TXT[f.nivel]}</span></td>
+      <td data-label="Proyecto"><a data-act="proj-open" data-id="${escH(p.id)}"><b>${escH(p.codigo)}</b> ${escH(p.nombre||p.cliente||"")}</a><div class="hint">${escH(p.cliente||"")}${p.lider ? " · Líder: "+escH(p.lider) : ""}</div></td>
+      <td data-label="Estado"><span class="badge ${ESTADO_PROY_BADGE[f.est]||"b-curso"}">${escH(f.est)}</span></td>
+      <td data-label="Horas">${!f.lb ? `<span class="hint">Sin línea base</span>` : consumoBadge(p)}</td>
+      ${verCostos ? `<td data-label="Margen">${!f.lb || !f.x ? `<span class="hint">—</span>` : !hayCostos() ? `<span class="hint">Faltan salarios</span>` : margenBadge(f.x)}</td>
+      <td data-label="Avance">${f.xOk && f.x.avance!=null ? `<span class="${f.x.nivelAvance && f.x.nivelAvance!=="ok" ? "badge "+NIVEL_BADGE[f.x.nivelAvance] : ""}">${fmtPct(f.x.avance)}</span>` : `<span class="hint">—</span>`}</td>` : ""}
+      <td data-label="Riesgos abiertos">${f.rs.length ? `<span class="badge ${f.altos ? "b-bloq" : "b-pend"}">${f.rs.length}${f.altos ? ` · ${f.altos} alto(s)` : ""}</span>` : `<span class="hint">—</span>`}</td>
+      <td data-label="Cambios por cobrar">${f.cambios.length ? `<span class="badge b-pend">${f.cambios.length}</span>` : `<span class="hint">—</span>`}</td>
+      <td data-label="Fin">${p.fechaFin ? `${escH(p.fechaFin)}${f.nFin && f.nFin!=="ok" ? `<div class="hint" style="color:var(--${f.nFin==="bad"?"bad":"warn"})">${f.dias < 0 ? `venció hace ${-f.dias} día(s)` : `faltan ${f.dias} día(s)`}</div>` : ""}` : `<span class="hint">—</span>`}</td></tr>`;
+  }).join("");
+  const res = filas.length ? `${filas.length} activo(s)${nB ? ` · <span style="color:var(--bad)">${nB} en rojo</span>` : ""}${nW ? ` · <span style="color:var(--warn)">${nW} en amarillo</span>` : ""}${!nB && !nW ? " · todo en verde" : ""}` : "sin proyectos activos";
+  const cab = ["","Proyecto","Estado","Horas"].concat(verCostos ? ["Margen","Avance"] : [], ["Riesgos abiertos","Cambios por cobrar","Fin"]);
+  return `<div class="card">${cbFold("tablero-dir", secTitulo("Tablero de proyectos", res),
+    `<div class="hint" style="margin-bottom:6px">El semáforo de cada proyecto es el peor de sus indicadores: horas contra presupuesto, margen, avance frente a las horas, riesgos abiertos, cambios por cobrar y fecha de fin. Los proyectos sin línea base no miden horas ni margen. Toca un proyecto para abrir su ficha.</div>`
+    + (rows ? cbTable(cab, rows) : `<div class="hint">No hay proyectos activos.</div>`))}</div>`;
+}
+
+// ---------- Informe por proyecto (Word) ----------
+// Dos versiones: interna (con valor vendido, costo y margen; solo para quien ve costos) y sin dinero (se puede enviar al cliente).
+async function downloadInformeProyecto(projId, conDinero){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  if(conDinero && !puede("costos.ver")){ showMsg("Tu usuario no puede ver los costos.", "bad"); return; }
+  if(!downloadsCap){ showMsg("La descarga no está disponible en esta vista.", "bad"); return; }
+  if(typeof JSZip === "undefined"){ showMsg("No se pudo cargar el generador de Word. Intenta de nuevo.", "bad"); return; }
+  if(!projHoras[p.id] || projHoras[p.id].loading || projHoras[p.id].error) await loadProjHoras(p, true);
+  const h = projHoras[p.id] || {};
+  if(h.error){ showMsg("No se pudieron cargar las horas del proyecto: " + h.error, "bad"); return; }
+  const hd = t => wHeading(t).replace("<w:pPr>", "<w:pPr><w:keepNext/>");
+  const fechaCorte = new Date().toLocaleDateString("es-CO",{day:"numeric",month:"long",year:"numeric"});
+  let n = 0; const sec = t => hd(`${++n}. ${t}`);
+  let body = "";
+  body += wp("INFORME DE PROYECTO", {bold:true, color:"1F4E78", size:32, after:40});
+  body += wp(`${p.codigo} · ${p.nombre||p.cliente||""}`, {bold:true, color:"6B7280", size:24, after:20});
+  body += wp(`${p.cliente ? "Cliente: "+p.cliente+"   ·   " : ""}Corte: ${fechaCorte}`, {italics:true, color:"6B7280", size:20, after: conDinero ? 60 : 260});
+  if(conDinero) body += wp("Versión interna: incluye cifras económicas. No enviar al cliente.", {bold:true, color:"B91C1C", size:18, after:260});
+
+  body += sec("Datos generales");
+  const equipo = (p.equipo||[]).filter(x=>x!==p.lider);
+  const datos = [["Tipo", tipoProy(p)], ["Clase de trabajo", p.clase||"—"], ["Estado", estadoProy(p)], ["Documento", docLabel(p)||"—"],
+    ["Fecha de inicio", p.fechaInicio||"—"], ["Fecha de fin", p.fechaFin||"—"], ["Líder del proyecto", p.lider||"—"], ["Equipo", equipo.join(", ")||"—"]];
+  if(p.objeto) datos.push(["Objeto", p.objeto]);
+  body += wTable(["Dato","Valor"], [2600,7400], datos);
+  const ords = (p.ordenes||[]).slice().sort((a,b)=>(a.fecha||"").localeCompare(b.fecha||""));
+  if(ords.length){
+    body += wp("Órdenes de servicio y compra", {bold:true, after:80, keepNext:true});
+    body += wTable(["Número","Descripción","Días","Estado"], [2000,4800,1000,2200], ords.map(o=>[o.numero||"—", o.descripcion||"—", o.dias!=null ? fmtN(o.dias) : "—", o.estado||"—"]));
+  }
+
+  body += sec("Horas");
+  const c = consumoDe(p);
+  if(c && c.pct!=null) body += wp(`Se han registrado ${fmtN(c.horas)} h de un presupuesto de ${fmtN(c.pres.horas)} h (${Math.round(c.pct)} %). ${c.disponible >= 0 ? `Quedan ${fmtN(c.disponible)} h disponibles.` : `El presupuesto se superó en ${fmtN(-c.disponible)} h.`}${c.pres.cambios ? ` El presupuesto incluye ${fmtN(c.pres.cambios)} h de cambios de alcance cobrados.` : ""}`);
+  else body += wp(`Se han registrado ${fmtN(h.total||0)} h. El proyecto no tiene presupuesto de horas.`);
+  if((h.rows||[]).length) body += wTable(["Ingeniero","Horas","Horas extra","Desde","Hasta"], [3400,1500,1500,1800,1800],
+    h.rows.map(r=>[r.engineer, fmtN(r.horas)+" h", r.extra ? fmtN(r.extra)+" h" : "—", r.desde||"—", r.hasta||"—"]).concat([["Total", fmtN(h.total)+" h", h.extra ? fmtN(h.extra)+" h" : "—", "", ""]]));
+
+  if(conDinero){
+    body += sec("Rentabilidad");
+    const x = rentabilidadDe(p), cp = costoProyecto(p);
+    if(!x){
+      body += wp("El proyecto no tiene valor vendido registrado.");
+      if(cp && !cp.cargando && !cp.error && hayCostos()) body += wp(`Costo a la fecha: ${fmtCOP(cp.total)} (incluye ${fmtCOP(cp.gastos)} de gastos).`);
+    } else if(x.sinTrm) body += wp("La venta está en dólares y falta registrar la TRM para calcular la rentabilidad.");
+    else if(x.cargando || x.error) body += wp("No se pudieron calcular las cifras de rentabilidad.");
+    else {
+      const filas = [["Valor vendido", fmtCOP(x.venta) + (x.moneda==="USD" ? " (venta en USD, convertida con la TRM registrada)" : "")]];
+      if(x.sinCostos) filas.push(["Costo a la fecha", "Faltan los salarios para calcularlo"]);
+      else {
+        filas.push(["Costo a la fecha", fmtCOP(x.costo)], ["Margen a la fecha", `${fmtCOP(x.margen)} (${fmtPct(x.margenPct)})`]);
+        if(x.costoOferta!=null) filas.push(["Costo presupuestado en la oferta", `${fmtCOP(x.costoOferta)}${x.margenOfertaPct!=null ? ` (margen ofertado ${fmtPct(x.margenOfertaPct)})` : ""}`]);
+        if(x.avance!=null) filas.push(["Avance del proyecto", fmtPct(x.avance) + (x.avanceFecha ? ` (actualizado el ${x.avanceFecha})` : "")]);
+        if(x.pron) filas.push(["Pronóstico al cierre", `costo ${fmtCOP(x.pron.costo)} · margen ${fmtCOP(x.pron.margen)} (${fmtPct(x.pron.margenPct)})`]);
+        if(cp && cp.gastos) filas.push(["Gastos incluidos en el costo", fmtCOP(cp.gastos)]);
+      }
+      body += wTable(["Concepto","Valor"], [3600,6400], filas);
+      if(!x.sinCostos && x.nivel!=="ok") body += wp(`Alerta: ${NIVEL_MARGEN_TXT[x.nivel].toLowerCase()} (${fmtPct(x.margenRef)} ${x.pron ? "pronosticado al cierre" : "a la fecha"}).`, {bold:true, color:"B91C1C"});
+      if(x.nivelAvance && x.nivelAvance!=="ok") body += wp(`Alerta: las horas consumidas (${fmtPct(x.consPct)}) van por delante del avance (${fmtPct(x.avance)}).`, {bold:true, color:"B91C1C"});
+    }
+  }
+
+  body += sec("Riesgos y problemas");
+  const rs = gestionDe(p, "riesgo");
+  if(rs.length) body += wTable(["Tipo","Descripción y acción","Impacto","Responsable","Estado"], [1100,4700,1100,1600,1500],
+    rs.map(g=>[g.tipo||"Riesgo", (g.descripcion||"") + (g.accion ? " — Acción: "+g.accion : ""), g.impacto||"—", g.responsable||"—", g.estado||"—"]));
+  else body += wp("Sin riesgos ni problemas registrados.");
+
+  body += sec("Cambios de alcance");
+  const cs = gestionDe(p, "cambio");
+  if(cs.length) body += wTable(["Fecha","Descripción","Solicitado por","Horas adicionales","Estado"], [1300,4000,1700,1300,1700],
+    cs.map(g=>[g.fecha||"—", g.descripcion||"", g.solicitadoPor||"—", g.horas!=null && g.horas!=="" ? fmtN(g.horas)+" h" : "—", g.estado||"—"]));
+  else body += wp("Sin cambios de alcance registrados.");
+
+  body += sec("Bitácora");
+  const ns = gestionDe(p, "nota").slice().reverse();
+  if(ns.length) body += wTable(["Fecha","Nota"], [1500,8500], ns.map(g=>[g.fecha||"—", g.descripcion||""]));
+  else body += wp("Sin notas en la bitácora.");
+  body += wp("Informe generado desde Nexo a partir del registro digital de actividades y de la gestión del proyecto.", {italics:true,color:"6B7280",size:16, after:0});
+
+  try{
+    const blob = await buildMembreteDocx(body, []);
+    await downloadsCap.save({ filename: `Informe_Proyecto_${sanitizeId(p.codigo)}${conDinero ? "_interno" : ""}.docx`, data: blob });
+    showMsg(`Informe del proyecto ${p.codigo} descargado${conDinero ? " (versión interna)" : ""}.`, "ok");
+  }catch(err){ showMsg("No se pudo generar el Word: " + (err.message||err.code), "bad"); }
+}
+// Sección de la ficha con los botones del informe (plegada como las demás).
+function renderInformeProyecto(p){
+  return cbFold("sec-informe-"+p.id, secTitulo("Informe del proyecto", "Word"),
+    `<div class="hint" style="margin-bottom:8px">Reúne datos generales, horas, riesgos y problemas, cambios de alcance y bitácora con corte a hoy. La versión sin dinero incluye la bitácora completa: revísala antes de enviarla a un cliente.</div>
+     <div class="infgrid">
+       <button class="secondary" data-act="proj-informe" data-proj="${escH(p.id)}" data-dinero="0">📄 Informe sin dinero (Word)</button>
+       ${puede("costos.ver") ? `<button class="secondary" data-act="proj-informe" data-proj="${escH(p.id)}" data-dinero="1">📄 Informe interno con rentabilidad (Word)</button>` : ""}
+     </div>`);
 }
 // ---------- Cierre formal del proyecto y base para cotizar ----------
 // Documento proyecto_gestion/cierre_<id del proyecto> {clase:"cierre", fecha, cifras:{…cotizado y real al cerrar},
@@ -2264,6 +2505,7 @@ async function loadProjHoras(p, silent){
       if(d.fecha && d.fecha > r.hasta) r.hasta = d.fecha;
     });
     projHoras[p.id] = { rows: Object.values(by).sort((x,y)=>y.horas-x.horas), total, extra, n, regs };
+    sincronizarResumenHoras();
   }catch(err){
     projHoras[p.id] = { error: err.message||err.code };
   }
@@ -3393,7 +3635,7 @@ function subscribeCompData(){
       err=>showGlobalError("Costos (revisa las reglas de Firestore)", err)));
   // Gestión de proyectos: riesgos y problemas, cambios de alcance y bitácora.
   if(puede("gestion.ver")) compUnsubs.push(db.collection("proyecto_gestion").limit(5000)
-    .onSnapshot(snap=>{ gestion = snap.docs.map(d=>({ id:d.id, ...d.data() })); gestionCargada = true; revisarLimite("Gestión de proyectos", snap.docs.length, 5000); migrarNotasABitacora(); if(view==="proyectos" || view==="informes") render(); },
+    .onSnapshot(snap=>{ gestion = snap.docs.map(d=>({ id:d.id, ...d.data() })); gestionCargada = true; revisarLimite("Gestión de proyectos", snap.docs.length, 5000); migrarNotasABitacora(); sincronizarResumenHoras(); if(view==="proyectos" || view==="informes") render(); },
       err=>showGlobalError("Riesgos, cambios y bitácora (revisa las reglas de Firestore)", err)));
   if(puede("gastos.ver")) compUnsubs.push(db.collection("proyecto_gastos").limit(5000)
     .onSnapshot(snap=>{ gastos = snap.docs.map(d=>({ id:d.id, ...d.data() })); revisarLimite("Gastos de proyectos", snap.docs.length, 5000); rrCostos(); },
@@ -3419,6 +3661,7 @@ function subscribeMine(){
     .orderBy("fecha","desc").limit(500)
     .onSnapshot(snap=>{
       myEntries = snap.docs.map(d=>({ _id:d.id, ...d.data() }));
+      if(misHoras && !misHoras.loading) misHoras = null;   // Mis proyectos vuelve a sumar las horas la próxima vez que se abra
       revisarLimite(`Actividades de ${selectedEngineer} en ${monthLabel(selectedMonth)}`, snap.docs.length, 500);
       render();
     }, err=>showGlobalError("Mis actividades", err));
@@ -3578,8 +3821,8 @@ function subscribeProjects(){
   if(!db) return;
   unsubProj = db.collection("config_projects").orderBy("codigo").onSnapshot(snap=>{
     projectsList = snap.docs.map(d=>({ id:d.id, ...d.data() }));
-    migrarNotasABitacora();
-    if(view==="form" || view==="proyectos" || view==="informes") render();
+    migrarNotasABitacora(); sincronizarResumenHoras();
+    if(view==="form" || view==="proyectos" || view==="informes" || view==="misproyectos") render();
     if(view==="proyectos" || view==="informes") loadConsumoProyectos();
   }, err=>showGlobalError("Proyectos", err));
 }
@@ -4156,7 +4399,7 @@ function stopAllSubs(){
   cierreHasta = ""; historialList = null; limitesAlcanzados.clear(); openFolds.clear();
   stopCompData();
   myEntries = []; allEntries = []; engineersList = []; projectsList = []; openTasksList = []; usuariosList = [];
-  estimates = {}; projHoras = {}; projSel = ""; editingId = null; pendingConfirm = null; formMsg = "";
+  estimates = {}; projHoras = {}; misHoras = null; resumenEnCurso.clear(); projSel = ""; editingId = null; pendingConfirm = null; formMsg = "";
 }
 // Fichas de todos los usuarios (solo admin), para Equipo y Usuarios y accesos.
 function subscribeUsuarios(){
