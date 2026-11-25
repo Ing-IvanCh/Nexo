@@ -397,6 +397,7 @@ tr:last-child td{border-bottom:none}
 .cbfold{margin-top:12px;border-top:1px solid var(--border);padding-top:10px}
 .cbfold summary{cursor:pointer;font-weight:600;font-size:13.5px;color:var(--primary)}
 .cbfold-body{margin-top:10px}
+#act_hint{margin-top:4px} #act_hint.act-otro{color:var(--warn);font-weight:600}
 .sr-only{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0);white-space:nowrap}
 .sem{display:inline-block;width:12px;height:12px;border-radius:50%;background:var(--sub);opacity:.35}
 .sem.ok{background:var(--ok);opacity:1} .sem.warn{background:var(--warn);opacity:1} .sem.bad{background:var(--bad);opacity:1}
@@ -491,10 +492,38 @@ tr.prow.psel td{background:var(--accent)}
 // 
 // ---------- 1. CONFIGURACIÓN FIJA ----------
 // Actividades que el ingeniero puede elegir en el formulario.
-const ACTIVIDADES = ["Desarrollo de plano","Desarrollo de ingeniería","Servicio remoto","Servicio (en campo)",
-  "Revisión de cronograma","Elaboración de informe","Reunión de seguimiento","Apoyo comercial",
-  "Apoyo administrativo","Capacitación / formación","Gestión documental","Atención a cliente interno",
-  "Planeación de proyecto","Soporte a otra área","Otro (especificar en detalle)"];
+// Agrupadas en el formulario, cada una con ejemplos que se ven debajo al elegirla (sacados de lo que el equipo registra).
+// Los nombres que ya existían no cambian: los registros anteriores, los informes y los bonos de campo siguen igual.
+const ACTIVIDAD_GRUPOS = [
+  { grupo:"Proyectos y servicios", items:[
+    ["Desarrollo de ingeniería", "Programación, configuración, demos, análisis de datos."],
+    ["Desarrollo de plano", "Planos, diagramas, arquitecturas."],
+    ["Pruebas y puesta en marcha", "Pruebas con el cliente, comisionamiento, ajustes de programa, casos con el fabricante (TAC)."],
+    ["Preparación de equipos en taller", "Configuración y pruebas de equipos en oficina antes de enviarlos a campo."],
+    ["Servicio (en campo)", "Trabajo en el sitio del cliente."],
+    ["Servicio remoto", "Conexión remota al sistema del cliente."],
+    ["Soporte técnico / atención de fallas", "Fallas de equipos del cliente (pantalla HMI, controlador, red), atención de garantías."],
+    ["Desplazamiento a/desde campo", "Movilización y regreso de un servicio."],
+    ["Elaboración de informe", "Reportes de servicio, informes técnicos y de mantenimiento."],
+    ["Reunión de seguimiento", "Reuniones internas o con el cliente sobre el proyecto."],
+    ["Planeación de proyecto", "Planes de trabajo, planes de calidad o HSE del proyecto."],
+    ["Revisión de cronograma", "Seguimiento de fechas y avance."],
+    ["Gestión con proveedores", "Cotización de materiales, licencias, seguimiento a pedidos."] ]},
+  { grupo:"Interno de la empresa", items:[
+    ["Apoyo administrativo", "Correos, legalización de gastos, registro de horas, viáticos."],
+    ["Calidad y auditoría", "Preparación de auditorías, sistema de gestión."],
+    ["Gestión documental", "Organización y revisión de documentos."],
+    ["Seguridad y salud en el trabajo", "Exámenes médicos, inspecciones de la ARL, pausas activas, capacitaciones de SST."],
+    ["Capacitación / formación", "Cursos, certificaciones, plan de competencias."],
+    ["Soporte a otra área", "Mantenimiento de computadores y equipos de la empresa, cámaras, apoyo a otras áreas."],
+    ["Apoyo comercial", "Visitas técnicas, apoyo a ofertas, consultas del área comercial."],
+    ["Atención a cliente interno", "Consultas de compañeros."] ]},
+  { grupo:"Si ninguna aplica", items:[
+    ["Otro (especificar en detalle)", "Úsalo solo si ninguna actividad aplica y explica en el detalle qué hiciste. Antes revisa: Apoyo administrativo (correos, gastos), Pruebas y puesta en marcha, Seguridad y salud en el trabajo, Soporte a otra área."] ]}
+];
+const ACTIVIDADES = ACTIVIDAD_GRUPOS.flatMap(g=>g.items.map(x=>x[0]));
+const ACTIVIDAD_EJEMPLOS = Object.fromEntries(ACTIVIDAD_GRUPOS.flatMap(g=>g.items));
+const ACTIVIDAD_OTRO = "Otro (especificar en detalle)";
 // Estados de avance de una tarea del ingeniero.
 const ESTADOS = ["Pendiente","En curso","Completada","Bloqueada"];
 // Tope de horas normales por día (jornada completa). También vale como 1 día en compensatorios.
@@ -877,6 +906,7 @@ function render(){
   const escrito = capturarEscrito();
   renderPantalla();
   restaurarEscrito(escrito);
+  pistaActividad();
   accesibilidad();
 }
 function renderPantalla(){
@@ -909,13 +939,22 @@ function renderPantalla(){
   wireEvents();
 }
 
+// Ejemplos de la actividad elegida, debajo del selector. Con "Otro" se ve como aviso.
+function pistaActividad(){
+  const sel = document.getElementById("f_actividad"), el = document.getElementById("act_hint");
+  if(!sel || !el) return;
+  const t = ACTIVIDAD_EJEMPLOS[sel.value] || "";
+  el.textContent = t;
+  el.style.display = t ? "" : "none";
+  el.classList.toggle("act-otro", sel.value === ACTIVIDAD_OTRO);
+}
 // Pestaña 'Registrar / Mis actividades': formulario del registro diario y tabla del mes.
 function renderForm(){
   if(!engineersList.length){
     return `<div class="card"><div class="empty">${isOwner ? "Configurando el equipo por primera vez…" : "El equipo aún no ha sido configurado. Pide al administrador que abra la app primero."}</div></div>`;
   }
   const options = engineersList.map(e=>`<option value="${escH(e.name)}" ${e.name===selectedEngineer?'selected':''}>${escH(e.name)}</option>`).join("");
-  const actOpts = ACTIVIDADES.map(a=>`<option value="${a}">${a}</option>`).join("");
+  const actOpts = ACTIVIDAD_GRUPOS.map(g=>`<optgroup label="${g.grupo}">${g.items.map(([a])=>`<option value="${a}">${a}</option>`).join("")}</optgroup>`).join("");
   const estOpts = ESTADOS.map(e=>`<option value="${e}">${e}</option>`).join("");
   const proyOpts = [`<option value="${SIN_PROYECTO}">`, `<option value="${POR_DEFINIR}">`]
     .concat(projectsList.filter(proyActivo).map(p=>`<option value="${escH(projectOptionLabel(p))}">`)).join("");
@@ -944,7 +983,8 @@ function renderForm(){
         <label>Estado</label>
         <select id="f_estado"><option value="">Selecciona…</option>${estOpts}</select>
         <label>Actividad realizada</label>
-        <select id="f_actividad"><option value="">Selecciona…</option>${actOpts}</select>
+        <select id="f_actividad" aria-describedby="act_hint"><option value="">Selecciona…</option>${actOpts}</select>
+        <div class="hint" id="act_hint" aria-live="polite"></div>
         <label>Detalle de la actividad</label>
         <textarea id="f_detalle" maxlength="2000" placeholder="Describe qué se hizo exactamente"></textarea>
         <div class="row2">
@@ -1234,6 +1274,8 @@ function wireEvents(){
     const el = document.getElementById(id);
     if(el) el.required = isWork;
   });
+  const actSel = document.getElementById("f_actividad");
+  if(actSel) actSel.addEventListener("change", pistaActividad);
   const taskSel = document.getElementById("f_task");
   if(taskSel) taskSel.onchange = (e)=>{
     selectedTaskOption = e.target.value;
@@ -1255,6 +1297,7 @@ function wireEvents(){
       if(actEl) actEl.value = ""; if(detEl) detEl.value = ""; if(proyEl) proyEl.value = "";
       if(estEl) estEl.value = ""; if(pctEl) pctEl.value = "";
     }
+    pistaActividad();
   };
   const estSel = document.getElementById("f_estado");
   if(estSel) estSel.addEventListener("change", (e)=>{
@@ -1360,6 +1403,7 @@ async function ejecutarAccion(act, ds){
     document.getElementById("f_obs").value = d.obs||"";
     const extraSubEl = document.getElementById("f_extra_sub");
     if(extraSubEl) extraSubEl.value = d.extraTipo || "Trabajo normal";
+    pistaActividad();
     document.getElementById("entry_form").scrollIntoView({behavior:"smooth", block:"start"});
     return;
   }
