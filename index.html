@@ -713,7 +713,7 @@ const CAP_ACCION = {
   "save-engineer":"admin", "confirm-rename":"admin", "ask-del-engineer":"admin", "confirm-del-engineer":"admin",
   "proj-new":"admin", "proj-save":"admin", "ask-del-proj":"admin", "confirm-del-proj":"admin",
   "orden-save":"admin", "orden-edit":"admin", "ask-del-orden":"admin", "confirm-del-orden":"admin",
-  "costos-save":"costos.editar", "rent-save":"costos.editar", "gasto-save":"gastos.crear",
+  "costos-save":"costos.editar", "rent-save":"costos.editar", "orden-valores-save":"costos.editar", "gasto-save":"gastos.crear",
   "cb-trat":"comp.editar", "cb-dom-pago":"comp.editar", "cb-bono-pago":"comp.editar", "cb-saldo-pago":"comp.editar", "cb-save-saldo":"comp.editar",
   "ask-cierre":"admin", "confirm-cierre":"admin", "hist-reload":"admin",
   "cierre-save":"admin", "cierre-cifras":"admin", "ask-cierre-del":"admin", "confirm-cierre-del":"admin",
@@ -1447,6 +1447,7 @@ async function ejecutarAccion(act, ds){
   if(act === "costos-save"){ await saveCostos(); return; }
   if(act === "gasto-save"){ await saveGasto(ds.proj); return; }
   if(act === "rent-save"){ await saveRentab(ds.proj); return; }
+  if(act === "orden-valores-save"){ await saveValoresOrden(ds.proj); return; }
   if(act === "cierre-save"){ await saveCierre(ds.proj, false); return; }
   if(act === "cierre-cifras"){ await saveCierre(ds.proj, true); return; }
   if(act === "ask-cierre-del"){ pendingConfirm = {type:"reabrirCierre", key: ds.proj}; render(); return; }
@@ -1857,7 +1858,7 @@ function renderSeccionesProyecto(p){
   }
   if(puede("costos.ver")){
     const x = rentabilidadDe(p);
-    const res = !x ? "sin valor vendido" : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : `margen ${fmtPct(x.margenRef)}${x.pron ? " al cierre" : " a la fecha"}`;
+    const res = !x ? ((p.ordenes||[]).length ? "sin valores" : "sin valor vendido") : x.sinTrm ? "falta la TRM" : x.cargando || x.error ? "…" : x.sinVenta ? "sin órdenes ejecutadas" : `margen ${fmtPct(x.margenRef)}${x.ordenes ? " de las órdenes" : x.pron ? " al cierre" : " a la fecha"}`;
     out += cbFold("sec-rent-"+p.id, secTitulo("Rentabilidad", res), renderProjRentab(p));
   }
   if(puede("gestion.ver")) out += renderGestion(p) + renderCierreProyecto(p) + renderInformeProyecto(p);
@@ -2065,7 +2066,7 @@ function filaTablero(p){
   const c = lb ? consumoDe(p) : null;
   if(c && c.nivel) niveles.push(c.nivel);
   const x = verCostos && lb ? rentabilidadDe(p) : null;
-  const xOk = x && !x.sinTrm && !x.cargando && !x.error;
+  const xOk = x && !x.sinTrm && !x.cargando && !x.error && !x.sinVenta;
   if(xOk && hayCostos()) niveles.push(x.nivel);
   if(xOk && x.nivelAvance) niveles.push(x.nivelAvance);
   const rs = gestion.filter(g=>g.proyId===p.id && riesgoAbierto(g)), altos = rs.filter(g=>g.impacto==="Alto").length;
@@ -2152,6 +2153,22 @@ async function downloadInformeProyecto(projId, conDinero){
       if(cp && !cp.cargando && !cp.error && hayCostos()) body += wp(`Costo a la fecha: ${fmtCOP(cp.total)} (incluye ${fmtCOP(cp.gastos)} de gastos).`);
     } else if(x.sinTrm) body += wp("La venta está en dólares y falta registrar la TRM para calcular la rentabilidad.");
     else if(x.cargando || x.error) body += wp("No se pudieron calcular las cifras de rentabilidad.");
+    else if(x.ordenes){
+      const ro = x.ro || rentabOrdenes(p);
+      const filas = [["Cupo del contrato", ro.cupo!=null ? fmtCOP(ro.cupo) : "—"], ["Comprometido en órdenes", fmtCOP(ro.comprometido)], ["Disponible del cupo", ro.disponible!=null ? fmtCOP(ro.disponible) : "—"]];
+      if(x.sinVenta) filas.push(["Órdenes ejecutadas o en ejecución", "Ninguna todavía"]);
+      else {
+        filas.push(["Órdenes ejecutadas o en ejecución", fmtCOP(x.venta)]);
+        filas.push(["Costo total del contrato", x.sinCostos ? "Faltan los salarios para calcularlo" : fmtCOP(x.costo)]);
+        if(!x.sinCostos) filas.push(["Margen del contrato", `${fmtCOP(x.margen)} (${fmtPct(x.margenPct)})`]);
+      }
+      if(ro.sinOrden && ro.sinOrden.total > 0 && hayCostos()) filas.push(["Costo fuera de las órdenes", fmtCOP(ro.sinOrden.total)]);
+      body += wTable(["Concepto","Valor"], [3600,6400], filas);
+      body += wp("Rentabilidad por orden", {bold:true, after:80, keepNext:true});
+      body += wTable(["Orden","Estado","Valor","Costo","Margen"], [2300,2200,1900,1900,1700], ro.filas.map(r=>[r.o.numero||"—", r.o.estado||"—",
+        r.valor!=null ? fmtCOP(r.valor) : "Sin valor", r.sinFechas ? "Sin fecha de salida" : r.costo!=null && hayCostos() ? fmtCOP(r.costo) : "—", r.margenPct!=null && hayCostos() ? fmtPct(r.margenPct) : "—"]));
+      if(!x.sinVenta && !x.sinCostos && x.nivel!=="ok") body += wp(`Alerta: ${NIVEL_MARGEN_TXT[x.nivel].toLowerCase()} en el contrato (${fmtPct(x.margenPct)}).`, {bold:true, color:"B91C1C"});
+    }
     else {
       const filas = [["Valor vendido", fmtCOP(x.venta) + (x.moneda==="USD" ? " (venta en USD, convertida con la TRM registrada)" : "")]];
       if(x.sinCostos) filas.push(["Costo a la fecha", "Faltan los salarios para calcularlo"]);
@@ -2216,7 +2233,7 @@ function cifrasCierre(p){
   // Sin salarios registrados el costo real no es confiable (solo tendría gastos y bono): no se compara costo ni margen.
   const conCostos = puede("costos.ver") && hayCostos();
   const pres = presupuestoHoras(p), x = puede("costos.ver") ? rentabilidadDe(p) : null, c = conCostos ? costoProyecto(p) : null;
-  const xr = x && !x.sinTrm && !x.cargando && !x.error ? x : null;
+  const xr = x && !x.sinTrm && !x.cargando && !x.error && !x.sinVenta ? x : null;
   return { horasCotizadas: pres ? pres.base : null, horasCambios: pres ? pres.cambios : horasCambiosCobrados(p), horasPresupuesto: pres ? pres.horas : null, horasReales: h.total,
     costoCotizado: xr ? xr.costoOferta : null, costoReal: c && !c.cargando && !c.error ? c.total : null,
     venta: xr ? xr.venta : null, margenCotizadoPct: xr ? xr.margenOfertaPct : null, margenRealPct: xr && conCostos ? xr.margenPct : null, sinSalarios: puede("costos.ver") && !hayCostos(),
@@ -2831,7 +2848,7 @@ function renderProjCosto(p){
   const gs = gastosDe(p);
   const gRows = gs.map(g=>{
     const confirming = pendingConfirm && pendingConfirm.type==="deleteGasto" && pendingConfirm.key===g.id;
-    return `<tr><td data-label="Fecha">${g.fecha||"—"}</td><td data-label="Categoría">${escH(g.categoria||"")}</td><td data-label="Concepto">${escH(g.concepto||"")}</td>
+    return `<tr><td data-label="Fecha">${g.fecha||"—"}</td><td data-label="Categoría">${escH(g.categoria||"")}</td><td data-label="Concepto">${escH(g.concepto||"")}${g.ordenId ? `<div class="hint">Orden ${escH(((p.ordenes||[]).find(o=>o.id===g.ordenId)||{}).numero || g.ordenNumero || "")}</div>` : ""}</td>
       <td data-label="Valor"><b>${fmtCOP(g.valor)}</b></td>
       <td data-label="">${!puedeBorrarGasto(g) ? "" : confirming ? `<span class="confirmrow">¿Eliminar? <button class="tiny bad" data-act="confirm-del-gasto" data-id="${escH(g.id)}">Sí</button><button class="tiny" data-act="cancel-confirm">No</button></span>`
         : `<button class="tiny bad" data-act="ask-del-gasto" data-id="${escH(g.id)}">Eliminar</button>`}</td></tr>`;
@@ -2846,6 +2863,8 @@ function renderProjCosto(p){
         <div><label>Concepto</label><input id="gf_concepto" placeholder="Ej: Tiquetes Bogotá - Yopal"></div>
         <div><label>Valor (COP)</label><input type="number" id="gf_valor" min="0" step="1" placeholder="Ej: 850000"></div>
       </div>
+      ${ordenesVigentes(p).length ? `<label>Orden <span class="hint">(opcional: si el gasto es de una orden del contrato)</span></label>
+      <select id="gf_orden"><option value="">Del contrato (ninguna orden)</option>${ordenesVigentes(p).slice().sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")).map(o=>`<option value="${escH(o.id)}">${escH((o.numero||"Sin número") + (o.descripcion ? " — "+o.descripcion : ""))}</option>`).join("")}</select>` : ""}
       <button class="primary" data-act="gasto-save" data-proj="${escH(p.id)}" style="margin-top:10px">Agregar gasto</button>
     </div>`;
   return `${c ? `<h4 class="cbh">Costo del proyecto</h4>${resumen}` : ""}
@@ -2861,7 +2880,9 @@ async function saveGasto(projId){
   if(!v("gf_concepto")){ showMsg("Escribe el concepto del gasto.", "bad"); return; }
   if(!(valor > 0)){ showMsg("El valor del gasto debe ser mayor que cero.", "bad"); return; }
   try{
-    await db.collection("proyecto_gastos").add({ proyId:p.id, codigo:p.codigo, fecha:v("gf_fecha") || todayStr(), categoria:v("gf_cat"), concepto:v("gf_concepto"), valor, creadoPor:authEmail, createdAt:new Date().toISOString() });
+    const ordenId = v("gf_orden"), orden = ordenId ? (p.ordenes||[]).find(o=>o.id===ordenId) : null;
+    await db.collection("proyecto_gastos").add({ proyId:p.id, codigo:p.codigo, fecha:v("gf_fecha") || todayStr(), categoria:v("gf_cat"), concepto:v("gf_concepto"), valor,
+      ...(orden ? { ordenId:orden.id, ordenNumero:orden.numero||"" } : {}), creadoPor:authEmail, createdAt:new Date().toISOString() });
     showMsg("Gasto agregado.", "ok");
   }catch(err){ showMsg("No se pudo guardar el gasto (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
 }
@@ -2884,18 +2905,97 @@ const BRECHA_AMARILLO = 10, BRECHA_ROJO = 20;      // puntos de % de horas consu
 const AVANCE_MIN_PRONOSTICO = 5;                   // con menos avance el pronóstico no es confiable
 const MONEDAS_VENTA = ["COP","USD"];
 function finDe(p){ return finanzas[p.id] || null; }
-function tieneVenta(p){ const f = finDe(p); return !!(f && Number(f.valorVenta) > 0); }
+function tieneVenta(p){ const f = finDe(p); return !!(f && Number(f.valorVenta) > 0) || modoOrdenes(p); }
 // Convierte un valor de la oferta a pesos con la TRM registrada (null si es USD sin TRM).
 function aPesos(f, v){
   if(v==null || v==="" || isNaN(Number(v))) return null;
   if(f.moneda==="USD") return Number(f.trm) > 0 ? Number(v) * Number(f.trm) : null;
   return Number(v);
 }
+// ---------- Contratos de órdenes abiertas: rentabilidad por orden ----------
+// El valor de cada orden lo escribe contabilidad y se guarda en proyecto_finanzas/<id>.valoresOrden {idOrden: valor}
+// (misma moneda y TRM del contrato). Cuando alguna orden tiene valor, el "valor vendido" del contrato pasa a ser el
+// cupo y la venta del contrato es la suma de las órdenes ya ejecutadas o en ejecución.
+// Costo de cada orden: horas de sus ingenieros en el código del contrato entre la salida y el regreso (más
+// DIAS_INFORME_ORDEN días después para informes), el bono de campo de esos días y los gastos asignados a la orden.
+const DIAS_INFORME_ORDEN = 5;
+const ORDEN_CON_VENTA = ["En ejecución","Ejecutada pendiente de pago","Cerrada"];
+function valorOrdenOriginal(p, o){ const f = finDe(p), v = f && f.valoresOrden ? f.valoresOrden[o.id] : null; return v==null || v==="" || isNaN(Number(v)) ? null : Number(v); }
+function ordenesVigentes(p){ return (p.ordenes||[]).filter(o=>o.estado!=="Cancelada"); }
+function modoOrdenes(p){ return ordenesVigentes(p).some(o=>valorOrdenOriginal(p,o)!=null); }
+function sumarDias(fecha, n){ const d = new Date(fecha+"T12:00:00"); d.setDate(d.getDate()+n); return d.toISOString().slice(0,10); }
+// Reparte los registros del proyecto entre sus órdenes: primero la orden en cuyo viaje cae la fecha; si no, la orden
+// recién regresada (días de informe). Un registro cuenta en una sola orden. Devuelve {porOrden:{id:[regs]}, sinOrden:[regs]}.
+function repartoOrdenes(p){
+  const h = projHoras[p.id];
+  if(!h || h.loading || h.error) return null;
+  const ords = ordenesVigentes(p).filter(o=>o.fechaSalida).sort((a,b)=>a.fechaSalida.localeCompare(b.fechaSalida));
+  const hoy = todayStr(), porOrden = {}, sinOrden = [];
+  ords.forEach(o=>porOrden[o.id] = []);
+  const deIng = (o, d)=> !(o.ingenieros||[]).length || o.ingenieros.includes(d.engineer);
+  (h.regs||[]).forEach(d=>{
+    if(AUSENCIA_TYPES.includes(d.tipoHora||"Normal") || !(Number(d.horas) > 0) || !d.fecha){ return; }
+    let o = ords.find(o=>deIng(o,d) && d.fecha >= o.fechaSalida && d.fecha <= (o.fechaRegreso || hoy));
+    if(!o) o = ords.filter(o=>o.fechaRegreso && deIng(o,d) && d.fecha > o.fechaRegreso && d.fecha <= sumarDias(o.fechaRegreso, DIAS_INFORME_ORDEN))
+      .sort((a,b)=>b.fechaRegreso.localeCompare(a.fechaRegreso))[0];
+    if(o) porOrden[o.id].push(d); else sinOrden.push(d);
+  });
+  return { porOrden, sinOrden };
+}
+// Bono de campo de los días de una orden (mismo cálculo que el del contrato, limitado a sus ingenieros y fechas).
+function bonoDeOrden(p, o){
+  const cfg = costosParams(), cod = String(p.codigo||"").trim();
+  if(!(cfg.valorBono > 0) || !(compLoaded.comp && compLoaded.campo) || !o.fechaSalida) return 0;
+  const hasta = o.fechaRegreso || todayStr();
+  let t = 0;
+  Object.values(computeCompBonos()).forEach(r=>{
+    if((o.ingenieros||[]).length && !o.ingenieros.includes(r.name)) return;
+    r.dias.forEach(x=>{
+      if(x.fecha < o.fechaSalida || x.fecha > hasta) return;
+      const cods = [...new Set([...x.proyectos].map(codigoProyecto))];
+      if(cods.includes(cod)) t += cfg.valorBono / cods.length;
+    });
+  });
+  return t;
+}
+// Rentabilidad de cada orden del contrato y totales del cupo. null si el contrato no maneja valores por orden.
+function rentabOrdenes(p){
+  if(!modoOrdenes(p)) return null;
+  const f = finDe(p) || {};
+  const rep = repartoOrdenes(p), conCostos = hayCostos();
+  const filas = ordenesVigentes(p).slice().sort((a,b)=>(b.fechaSalida||b.fecha||"").localeCompare(a.fechaSalida||a.fecha||"")).map(o=>{
+    const v0 = valorOrdenOriginal(p,o), valor = v0==null ? null : aPesos(f, v0);
+    const regs = rep ? (rep.porOrden[o.id] || []) : null;
+    const mo = regs ? costoRegistros(regs) : null;
+    const gas = gastos.filter(g=>g.proyId===p.id && g.ordenId===o.id).reduce((a,g)=>a+(Number(g.valor)||0), 0);
+    const bono = bonoDeOrden(p, o);
+    const costo = mo ? mo.manoObra + bono + gas : null;
+    const horas = regs ? regs.reduce((a,d)=>a+(Number(d.horas)||0), 0) : null;
+    const conVenta = ORDEN_CON_VENTA.includes(o.estado);
+    // Sin fecha de salida la orden aún no tiene costo propio: no se muestra margen (saldría 100 %).
+    const margen = valor!=null && costo!=null && o.fechaSalida ? valor - costo : null;
+    const margenPct = margen!=null && valor > 0 ? margen / valor * 100 : null;
+    return { o, valor, sinTrm: v0!=null && valor==null, costo, mo, bono, gastos:gas, horas, conVenta, margen, margenPct,
+      nivel: margenPct!=null && conCostos ? nivelMargen(margenPct) : null, sinFechas: !o.fechaSalida };
+  });
+  const sinTrm = filas.some(x=>x.sinTrm);
+  const comprometido = filas.reduce((a,x)=>a+(x.valor||0), 0);
+  const venta = filas.filter(x=>x.conVenta).reduce((a,x)=>a+(x.valor||0), 0);
+  const cupo = Number(f.valorVenta) > 0 ? aPesos(f, f.valorVenta) : null;
+  const gasSinOrden = gastos.filter(g=>g.proyId===p.id && !ordenesVigentes(p).some(o=>o.id===g.ordenId)).reduce((a,g)=>a+(Number(g.valor)||0), 0);
+  const moSinOrden = rep ? costoRegistros(rep.sinOrden).manoObra : null;
+  // Bono de días en campo de este código que no caen en ninguna orden (lo que sobra del bono del contrato).
+  const bonoSinOrden = Math.max(0, (bonoPorCodigo(null, null)[String(p.codigo||"").trim()] || 0) - filas.reduce((a,x)=>a+x.bono, 0));
+  return { filas, cupo, comprometido, disponible: cupo!=null ? cupo - comprometido : null, venta, sinTrm,
+    cargando: !rep, sinOrden: moSinOrden==null ? null : { manoObra: moSinOrden, bono: bonoSinOrden, gastos: gasSinOrden, horas: rep.sinOrden.reduce((a,d)=>a+(Number(d.horas)||0),0), total: moSinOrden + bonoSinOrden + gasSinOrden } };
+}
 function nivelMargen(pct){ return pct < MARGEN_ROJO ? "bad" : pct < MARGEN_AMARILLO ? "warn" : "ok"; }
 const NIVEL_MARGEN_TXT = { ok:"Margen sano", warn:"Margen bajo", bad:"Margen en riesgo" };
 // Rentabilidad del proyecto: null si no tiene valor vendido; {cargando}/{error} mientras llegan las horas.
 function rentabilidadDe(p){
   const f = finDe(p);
+  const ro = modoOrdenes(p) ? rentabOrdenes(p) : null;
+  if(ro) return rentabilidadContratoOrdenes(p, ro);
   if(!f || !(Number(f.valorVenta) > 0)) return null;
   const venta = aPesos(f, f.valorVenta);
   if(venta==null) return { sinTrm:true };
@@ -2923,11 +3023,24 @@ function rentabilidadDe(p){
     costoOferta, margenOfertaPct, desvCosto: costoOferta ? (pron ? pron.costo : costo) - costoOferta : null,
     margenRef, nivel: nivelMargen(margenRef), sinCostos: !hayCostos(), moneda: f.moneda||"COP" };
 }
+// Contrato por órdenes: venta = órdenes ejecutadas o en ejecución; costo = todo lo del código. Sin avance ni pronóstico.
+function rentabilidadContratoOrdenes(p, ro){
+  if(ro.sinTrm) return { sinTrm:true, ordenes:true };
+  const c = costoProyecto(p);
+  if(c.cargando) return { venta:ro.venta, cargando:true, ordenes:true };
+  if(c.error) return { venta:ro.venta, error:c.error, ordenes:true };
+  if(!(ro.venta > 0)) return { ordenes:true, sinVenta:true, costo:c.total, ro };
+  const margen = ro.venta - c.total, margenPct = margen / ro.venta * 100;
+  return { venta:ro.venta, costo:c.total, margen, margenPct, avance:null, avanceFecha:"", consPct:null, brecha:null, nivelAvance:null, pron:null,
+    costoOferta:null, margenOfertaPct:null, desvCosto:null, margenRef:margenPct, nivel:nivelMargen(margenPct), sinCostos:!hayCostos(),
+    moneda:(finDe(p)||{}).moneda||"COP", ordenes:true, ro };
+}
 const fmtPct = v => v==null || isNaN(v) ? "—" : Math.round(v)+" %";
 // Etiqueta corta del margen para tablas.
 function margenBadge(x){
   if(!x || x.sinTrm) return `<span class="hint">${x && x.sinTrm ? "Falta TRM" : "—"}</span>`;
   if(x.cargando || x.error) return `<span class="hint">…</span>`;
+  if(x.sinVenta) return `<span class="hint">Sin órdenes ejecutadas</span>`;
   return `<span class="badge ${NIVEL_BADGE[x.nivel]}">${fmtPct(x.margenRef)}</span>`;
 }
 // Proyectos con valor vendido, del margen más bajo al más alto.
@@ -2937,7 +3050,7 @@ function proyectosConVenta(){
 }
 // Proyectos en alerta de margen o con el avance atrasado frente a las horas (solo con datos completos).
 function alertasRentabilidad(){
-  const lista = proyectosConVenta().filter(({x})=>x && !x.sinTrm && !x.cargando && !x.error);
+  const lista = proyectosConVenta().filter(({x})=>x && !x.sinTrm && !x.cargando && !x.error && !x.sinVenta);
   if(!hayCostos()) return { margen:[], avance:lista.filter(({x})=>x.nivelAvance && x.nivelAvance!=="ok") };
   return { margen: lista.filter(({x})=>x.nivel!=="ok"), avance: lista.filter(({x})=>x.nivelAvance && x.nivelAvance!=="ok") };
 }
@@ -2947,6 +3060,7 @@ function renderProjRentab(p){
   const f = finDe(p) || {};
   const x = rentabilidadDe(p);
   const mon = f.moneda || "COP";
+  const conOrdenes = ordenesVigentes(p).length > 0, enOrdenes = modoOrdenes(p);
   const form = `<div class="ordenform">
       <div class="hint" style="margin-bottom:6px"><b>Datos de la transferencia de oferta</b> — solo los ven los administradores.</div>
       <div class="row2">
@@ -2954,17 +3068,21 @@ function renderProjRentab(p){
         <div><label>TRM usada <span class="hint">(solo si es USD)</span></label><input type="number" id="rf_trm" min="0" step="any" value="${f.trm!=null?f.trm:""}" placeholder="Ej: 4100"></div>
       </div>
       <div class="row2">
-        <div><label>Valor vendido</label><input type="number" id="rf_venta" min="0" step="any" value="${f.valorVenta!=null?f.valorVenta:""}" placeholder="Ej: 85000000"></div>
+        <div><label>${conOrdenes ? "Cupo total del contrato" : "Valor vendido"}</label><input type="number" id="rf_venta" min="0" step="any" value="${f.valorVenta!=null?f.valorVenta:""}" placeholder="Ej: 85000000"></div>
         <div><label>Costo presupuestado <span class="hint">(opcional, si la oferta lo trae)</span></label><input type="number" id="rf_costo" min="0" step="any" value="${f.costoOferta!=null?f.costoOferta:""}" placeholder="Misma moneda"></div>
       </div>
-      <div class="row2">
+      <div class="row2"${enOrdenes ? ' style="display:none"' : ""}>
         <div><label>% de avance del proyecto</label><input type="number" id="rf_avance" min="0" max="100" step="1" value="${f.avance!=null?f.avance:""}" placeholder="0-100"></div>
         <div><label>Avance actualizado el</label><div class="fixedeng" style="font-weight:400">${escH(f.avanceFecha||"—")}</div></div>
       </div>
+      ${enOrdenes ? `<div class="hint" style="margin-top:6px">En contratos por órdenes no se usan el % de avance ni el pronóstico: la rentabilidad sale de cada orden.</div>` : ""}
       <button class="primary" data-act="rent-save" data-proj="${escH(p.id)}" style="margin-top:10px">Guardar rentabilidad</button>
-    </div>`;
+    </div>${conOrdenes ? formValoresOrden(p) : ""}`;
   let res = "";
-  if(!x) res = `<div class="hint" style="margin-bottom:8px">${puede("costos.editar") ? "Escribe el valor vendido para calcular el margen y el pronóstico al cierre." : "Este proyecto aún no tiene valor vendido registrado."}</div>`;
+  if(enOrdenes) res = renderRentabOrdenes(p, x);
+  else if(!x) res = `<div class="hint" style="margin-bottom:8px">${conOrdenes
+      ? (puede("costos.editar") ? "Este contrato tiene órdenes: escribe abajo el valor de cada una para ver la rentabilidad por orden y del contrato." : "Este contrato aún no tiene el valor de sus órdenes registrado.")
+      : (puede("costos.editar") ? "Escribe el valor vendido para calcular el margen y el pronóstico al cierre." : "Este proyecto aún no tiene valor vendido registrado.")}</div>`;
   else if(x.sinTrm) res = `<div class="palert warn">El valor está en USD: escribe la TRM usada para convertirlo a pesos.</div>`;
   else if(x.cargando) res = `<div class="hint">Calculando…</div>`;
   else if(x.error) res = `<div class="hint">No se pudo calcular: ${escH(x.error)}</div>`;
@@ -2987,6 +3105,63 @@ function renderProjRentab(p){
   }
   return `<h4 class="cbh">Rentabilidad</h4>${res}${puede("costos.editar") ? form : ""}`;
 }
+// Rentabilidad de un contrato por órdenes: cupo, venta de las órdenes, margen del contrato y tabla por orden.
+function renderRentabOrdenes(p, x){
+  const ro = (x && x.ro) || rentabOrdenes(p);
+  if(!ro) return "";
+  if(ro.sinTrm) return `<div class="palert warn">El contrato está en USD: escribe la TRM usada para convertir el valor de las órdenes a pesos.</div>`;
+  const conCostos = hayCostos();
+  const kpis = `<div class="kpis">
+      <div class="kpi"><div class="kpi-l">Cupo del contrato</div><div class="kpi-v">${ro.cupo!=null ? fmtCOP(ro.cupo) : "—"}</div></div>
+      <div class="kpi"><div class="kpi-l">Comprometido en órdenes</div><div class="kpi-v">${fmtCOP(ro.comprometido)}${ro.cupo ? ` <span class="hint">${fmtPct(ro.comprometido/ro.cupo*100)}</span>` : ""}</div></div>
+      <div class="kpi"><div class="kpi-l">Disponible del cupo</div><div class="kpi-v" style="color:${ro.disponible!=null && ro.disponible < 0 ? "var(--bad)" : "inherit"}">${ro.disponible!=null ? fmtCOP(ro.disponible) : "—"}</div></div>
+      <div class="kpi"><div class="kpi-l">Margen del contrato</div><div class="kpi-v">${!x || x.cargando || x.error ? "…" : x.sinVenta ? "—" : `${fmtCOP(x.margen)} <span class="hint">${fmtPct(x.margenPct)}</span>`}</div></div>
+    </div>`;
+  const filas = ro.filas.map(r=>{
+    const o = r.o, ej = diasEjecutados(p, o), vend = Number(o.dias)||0;
+    return `<tr>
+      <td data-label="Orden"><b>${escH(o.numero||"—")}</b><div class="hint">${escH(o.descripcion||"")}</div></td>
+      <td data-label="Estado">${escH(o.estado||"—")}</td>
+      <td data-label="Días">${vend ? fmtN(vend)+" vendidos" : "—"}${ej!=null ? `<div class="hint"${ej > vend && vend ? ' style="color:var(--bad)"' : ""}>${ej} ejecutados</div>` : ""}</td>
+      <td data-label="Valor">${r.valor!=null ? fmtCOP(r.valor) : `<span class="hint">Sin valor</span>`}</td>
+      <td data-label="Costo">${r.sinFechas ? `<span class="hint">Sin fecha de salida</span>` : r.costo==null ? "…" : `${fmtCOP(r.costo)}<div class="hint">${fmtN(r.horas)} h${r.bono ? " · bono "+fmtCOP(r.bono) : ""}${r.gastos ? " · gastos "+fmtCOP(r.gastos) : ""}</div>`}</td>
+      <td data-label="Margen">${r.margenPct==null || !conCostos ? `<span class="hint">—</span>` : `<span class="badge ${NIVEL_BADGE[r.nivel]}">${fmtPct(r.margenPct)}</span><div class="hint">${fmtCOP(r.margen)}</div>`}</td></tr>`;
+  }).join("");
+  const so = ro.sinOrden;
+  return kpis + `<div class="pcons">
+      <div class="pcons-top"><b>${x && !x.cargando && !x.error && !x.sinVenta ? `Órdenes ejecutadas o en ejecución: ${fmtCOP(ro.venta)} · costo total del contrato ${fmtCOP(x.costo)}` : "Aún no hay órdenes en ejecución o ejecutadas: el margen del contrato aparece cuando alguna avance de estado."}</b>
+        ${x && x.nivel && !x.sinCostos && !x.sinVenta ? `<span class="badge ${NIVEL_BADGE[x.nivel]}">${NIVEL_MARGEN_TXT[x.nivel]}</span>` : ""}</div>
+      ${so && so.total > 0 ? `<div class="hint">Costo que no cae en ninguna orden (coordinación, preparación, días fuera de los viajes): <b>${fmtCOP(so.total)}</b> · ${fmtN(so.horas)} h${so.gastos ? ` · gastos ${fmtCOP(so.gastos)}` : ""}. Cuenta en el margen del contrato, no en el de las órdenes.</div>` : ""}
+      ${!conCostos ? `<div class="hint" style="color:var(--bad)">Registra los salarios en ☰ → Costos: sin ellos el costo solo incluye gastos y bono, y el margen sale inflado.</div>` : ""}
+      <div class="hint">Costo de cada orden: horas de sus ingenieros en este código entre la salida y el regreso, más ${DIAS_INFORME_ORDEN} días después para informes; el bono de campo de esos días y los gastos asignados a la orden. Venta del contrato: órdenes en ejecución, ejecutadas o cerradas.</div>
+    </div>` + cbTable(["Orden","Estado","Días","Valor","Costo","Margen"], filas);
+}
+// Formulario de contabilidad: valor de cada orden del contrato (misma moneda del contrato).
+function formValoresOrden(p){
+  const f = finDe(p) || {};
+  const filas = ordenesVigentes(p).slice().sort((a,b)=>(b.fecha||"").localeCompare(a.fecha||"")).map(o=>{
+    const v = valorOrdenOriginal(p,o);
+    return `<tr><td data-label="Orden"><b>${escH(o.numero||"—")}</b><div class="hint">${escH(o.fecha||"")} · ${escH(o.estado||"")}</div></td>
+      <td data-label="Valor (${escH(f.moneda||"COP")})"><input type="number" class="ov_valor" data-orden="${escH(o.id)}" min="0" step="any" value="${v!=null ? v : ""}" placeholder="Valor de la OC/OS"></td></tr>`;
+  }).join("");
+  return `<div class="ordenform">
+      <div class="hint" style="margin-bottom:6px"><b>Valor de cada orden</b> — como llega en la OC/OS del cliente, en la moneda del contrato (${escH(f.moneda||"COP")}). Las órdenes nuevas las agrega un administrador en "Órdenes de servicio y compra".</div>
+      ${cbTable(["Orden","Valor"], filas)}
+      <button class="primary" data-act="orden-valores-save" data-proj="${escH(p.id)}" style="margin-top:10px">Guardar valores de las órdenes</button>
+    </div>`;
+}
+async function saveValoresOrden(projId){
+  const p = projectsList.find(x=>x.id===projId); if(!p) return;
+  const vals = [...document.querySelectorAll(".ov_valor")].map(el=>({ id:el.dataset.orden, v: el.value.trim()==="" ? null : Number(el.value) }));
+  if(vals.some(x=>x.v!=null && (isNaN(x.v) || x.v < 0))){ showMsg("Los valores de las órdenes deben ser números positivos.", "bad"); return; }
+  const prev = finDe(p) || {};
+  const valoresOrden = { ...(prev.valoresOrden||{}) };
+  vals.forEach(x=>{ if(x.v==null) delete valoresOrden[x.id]; else valoresOrden[x.id] = x.v; });
+  try{
+    await db.doc("proyecto_finanzas/"+p.id).set({ codigo:p.codigo, moneda:"COP", ...prev, valoresOrden, updatedAt:new Date().toISOString() });
+    showMsg("Valores de las órdenes guardados.", "ok");
+  }catch(err){ showMsg("No se pudieron guardar: " + (err.message||err.code), "bad"); }
+}
 async function saveRentab(projId){
   const p = projectsList.find(x=>x.id===projId); if(!p) return;
   const num = id=>{ const el = document.getElementById(id); return el && el.value.trim()!=="" ? Number(el.value) : null; };
@@ -2999,7 +3174,7 @@ async function saveRentab(projId){
   const prev = finDe(p) || {};
   d.avanceFecha = d.avance!==(prev.avance ?? null) ? todayStr() : (prev.avanceFecha || (d.avance!=null ? todayStr() : null));
   try{
-    await db.doc("proyecto_finanzas/"+p.id).set({ ...d, updatedAt:new Date().toISOString() });
+    await db.doc("proyecto_finanzas/"+p.id).set({ ...d, ...(prev.valoresOrden ? { valoresOrden:prev.valoresOrden } : {}), updatedAt:new Date().toISOString() });
     showMsg("Rentabilidad guardada.", "ok");
   }catch(err){ showMsg("No se pudo guardar (¿actualizaste las reglas de Firestore?): " + (err.message||err.code), "bad"); }
 }
